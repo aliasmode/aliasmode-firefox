@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - firefox-engine
+      - firefox-runtime-macos-linux
     tags:
       - "*"
 
@@ -13,17 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        target: ${{ (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/firefox-engine') && fromJSON('["windows"]') || fromJSON('["linux", "windows", "macos"]') }}
-        arch: ${{ (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/firefox-engine') && fromJSON('["x86_64"]') || fromJSON('["x86_64", "arm64", "i686"]') }}
-        exclude:
-          # Fails (.mozbuild does not include clang++-cl)
-          - target: windows
-            arch: arm64
-          # Unsupported
-          - target: macos
-            arch: i686
-          - target: linux
-            arch: i686
+        include: ${{ github.ref == 'refs/heads/firefox-runtime-macos-linux' && fromJSON('[{"target":"linux","arch":"x86_64"},{"target":"macos","arch":"arm64"}]') || (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/firefox-engine') && fromJSON('[{"target":"windows","arch":"x86_64"}]') || fromJSON('[{"target":"linux","arch":"x86_64"},{"target":"linux","arch":"arm64"},{"target":"windows","arch":"x86_64"},{"target":"windows","arch":"i686"},{"target":"macos","arch":"x86_64"},{"target":"macos","arch":"arm64"}]') }}
 
     steps:
       - name: Maximize build space
