@@ -25,13 +25,9 @@ from .fingerprints import from_browserforge, from_preset, generate_fingerprint, 
 from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
 from .locales import handle_locales
-import warnings
-
 from .pkgman import (
     INSTALL_DIR,
     OS_NAME,
-    Version,
-    effective_version_min,
     ensure_browser_profile_dir,
     get_path,
     installed_verstr,
@@ -88,57 +84,6 @@ def _generate_fontconfig(fontconfig_path: str, path: Optional[Path] = None) -> s
             f.write(conf_content)
 
     return runtime_conf
-
-
-def warn_if_executable_predates_playwright(path: Optional[Path]) -> None:
-    """Warn when a caller's own binary is older than their Playwright needs.
-
-    A managed install below the floor is simply upgraded (pkgman resolves it),
-    but `executable_path` deliberately bypasses that -- the caller supplied the
-    binary, so we neither replace it nor download another. That leaves the one
-    pairing nothing checks: an old build driven by Playwright >= 1.61, which
-    sends viewport fields the older Juggler schema rejects.
-
-    This warns rather than raises, because the pairing is not always fatal.
-    Camoufox defaults to no_viewport when it spoofs window dimensions
-    (sync_api), and Playwright then never sends Browser.setDefaultViewport --
-    so the default path works on an old build. It breaks only when a viewport
-    is set explicitly, and then the error is a bare "Protocol error
-    (Browser.setDefaultViewport)" with nothing pointing at the real cause.
-    Refusing to launch would break setups that currently work.
-
-    A build with no version.json beside it -- an unpackaged objdir build, say --
-    tells us nothing, so it is left alone.
-    """
-    if path is None:
-        return
-    try:
-        installed = Version.from_path(Path(path).parent)
-    except (FileNotFoundError, KeyError, ValueError):
-        return
-
-    required = effective_version_min()
-    if installed >= required:
-        return
-
-    warnings.warn(
-        f"The Camoufox build at {path} is {installed.build}, but Playwright "
-        f"{_resolved_playwright_version_str()} needs at least {required.build}. "
-        "Contexts created with an explicit viewport will fail with "
-        '"Protocol error (Browser.setDefaultViewport)". Update the build, or pin '
-        "playwright<1.61.",
-        RuntimeWarning,
-        stacklevel=3,
-    )
-
-
-def _resolved_playwright_version_str() -> str:
-    from importlib.metadata import version
-
-    try:
-        return version('playwright')
-    except Exception:
-        return 'the installed version'
 
 
 def get_env_vars(
@@ -330,7 +275,7 @@ def get_screen_cons(headless: Optional[bool] = None) -> Optional[Screen]:
     Bounds are CSS pixels, the unit Firefox lays its windows out in -- see
     camoufox.display for why that differs from the monitor's physical size.
     """
-    if headless is True:
+    if headless is False:
         return None  # Skip if headless
     display = largest_display()
     if display is None:
@@ -452,11 +397,6 @@ def warn_manual_config(config: Dict[str, Any]) -> None:
     # Manual navigator setting
     if is_domain_set(config, 'navigator.'):
         LeakWarning.warn('navigator', False)
-    # Touchscreen digitizer spoofing. Called out separately from the blanket
-    # navigator warning because the knock-on effects reach past navigator into
-    # CSS pointer media queries and the TouchEvent interfaces.
-    if is_domain_set(config, 'navigator.maxTouchPoints'):
-        LeakWarning.warn('max_touch_points', False)
     # Manual screen/window setting
     if is_domain_set(config, 'screen.', 'window.', 'document.body.'):
         LeakWarning.warn('viewport', False)
@@ -570,32 +510,6 @@ def sync_attach_vd(
     browser._virtual_display = virtual_display
 
     return browser
-
-
-def resolve_verstr(executable_path: Optional[Path] = None) -> str:
-    """The version of the build about to be launched.
-
-    installed_verstr() answers "which release did `camoufox fetch` put in the
-    cache", which is the wrong question when the caller named a binary: it
-    raises CamoufoxNotInstalled on a machine that has a perfectly good build and
-    simply never downloaded one. That is what every tests/patches guard hit in
-    CI -- 14 of 16 died before launching anything.
-
-    Firefox writes application.ini beside the executable, so when a path is
-    given the answer is right there. Falls back to the installed release when it
-    is not, which is the ordinary `pip install camoufox` case.
-    """
-    if executable_path:
-        ini = Path(executable_path).parent / 'application.ini'
-        try:
-            for line in ini.read_text(encoding='utf-8', errors='replace').splitlines():
-                if line.startswith('Version='):
-                    version = line.split('=', 1)[1].strip()
-                    if version:
-                        return version
-        except OSError:
-            pass
-    return installed_verstr()
 
 
 def launch_options(
@@ -752,15 +666,6 @@ def launch_options(
     # mappings supplied by callers. In particular, DISPLAY must not outlive the
     # virtual display that owns it.
     env = dict(environ) if env is None else dict(env)
-    if executable_path is None:
-        # Point every launch at a specific build without threading the path
-        # through each call site. The CI runners set it, and honouring it in the
-        # library is what lets tests/patches/*.py run against a local build,
-        # since those construct AsyncCamoufox directly.
-        # Absent the variable nothing changes.
-        _env_executable = environ.get('CAMOUFOX_EXECUTABLE_PATH', '').strip()
-        if _env_executable:
-            executable_path = _env_executable
     if isinstance(executable_path, str):
         # Convert executable path to a Path object
         executable_path = Path(abspath(executable_path))
@@ -806,7 +711,7 @@ def launch_options(
         ff_version_str = str(ff_version)
         LeakWarning.warn('ff_version', i_know_what_im_doing)
     else:
-        ff_version_str = resolve_verstr(executable_path).split('.', 1)[0]
+        ff_version_str = installed_verstr().split('.', 1)[0]
 
     # Generate a fingerprint
     _used_preset = False
@@ -826,10 +731,7 @@ def launch_options(
 
     # Bound the geometry to the real display. BrowserForge only honours this when
     # its pool has a match, so it is re-applied after generation as well.
-    # `headless` and "is there a display to probe" are separate questions: passing
-    # `headless or has_display(env)` made a headful run on a real display look like a
-    # headless one to get_screen_cons(), which then skipped the bound entirely.
-    screen_cons = screen or (get_screen_cons(headless) if has_display(env) else None)
+    screen_cons = screen or get_screen_cons(headless or has_display(env))
 
     if not _used_preset and fingerprint is None:
         # Default: BrowserForge synthetic generation (infinite unique fingerprints)
@@ -1049,7 +951,6 @@ def launch_options(
         pprint(config)
 
     # Validate the config
-    warn_if_executable_predates_playwright(executable_path)
     validate_config(config, path=executable_path)
 
     # Prepare environment variables to pass to Camoufox

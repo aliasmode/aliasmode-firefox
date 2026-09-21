@@ -11,23 +11,6 @@ const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppCon
 // scripts), so the screencast tick has to import them explicitly.
 const {setTimeout, clearTimeout} = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
 
-// Last-resort bound on how long one callback may occupy the process-global
-// activation chain below. The chain must always advance: a callback that never
-// returns wedges every later input event in every tab, permanently.
-//
-// The per-ack deadline in MouseDispatch.js covers the await that has actually
-// caused all four shipped deadlocks, but it is one of several unbounded waits
-// reachable from a single slot -- apz-repaints-flushed, TabSwitchDone below,
-// the drag path's juggler-drag-finalized and dragover waits, and the
-// cross-process dispatchDragEvent sends all have the same shape. None of them
-// has failed yet. Bounding only the wait that has already bitten us is the
-// posture that produced those four fixes, so bound the slot itself too.
-//
-// Sized as a backstop, not a tuning knob: with a 5s ack deadline a legitimate
-// worst-case input slot approaches 10s, so this must sit well clear of that.
-const kActivationSlotBudgetMs = 30000;
-const kSlotExpired = Symbol('activation-slot-expired');
-
 const Cr = Components.results;
 
 const helper = new Helper();
@@ -529,18 +512,7 @@ export class PageTarget {
       const notificationsPopup = muteNotificationsPopup ? this._linkedBrowser?.ownerDocument.getElementById('notification-popup') : null;
       notificationsPopup?.style.setProperty('pointer-events', 'none');
       try {
-        let timer;
-        const expired = new Promise(resolve => {
-          timer = setTimeout(() => resolve(kSlotExpired), kActivationSlotBudgetMs);
-        });
-        try {
-          if (await Promise.race([callback(), expired]) === kSlotExpired) {
-            dump(`[juggler] WARN activation-chain slot exceeded ` +
-                 `${kActivationSlotBudgetMs}ms; advancing the chain without it\n`);
-          }
-        } finally {
-          clearTimeout(timer);
-        }
+        await callback();
       } finally {
         notificationsPopup?.style.removeProperty('pointer-events');
       }
@@ -1013,20 +985,8 @@ export class PageTarget {
       state.inFlight = true;
       this.emit(PageTarget.Events.ScreencastFrame, {
         data: dataURL.substring(dataURL.indexOf(',') + 1),
-        // The viewport this frame depicts -- NOT the JPEG's own dimensions.
-        // Playwright's Firefox delegate maps deviceWidth/deviceHeight straight
-        // onto the client-visible viewportWidth/viewportHeight, and every other
-        // backend fills them from the page's viewport: the native path above
-        // sends pageWidth/pageHeight (clamped to the viewport, never scaled by
-        // the requested frame size), and the Chromium delegate forwards CDP's
-        // metadata.deviceWidth. Sending frameWidth/frameHeight here made the
-        // pair track `size=` instead, so a client asking for a 500x400 frame of
-        // a 1000x400 page was told the viewport was 500x200 -- and asking for a
-        // frame larger than the page reported a viewport larger than the page.
-        // The scaled dimensions are still carried by the JPEG itself, which is
-        // where a consumer that wants the image size reads them from.
-        deviceWidth: Math.round(rect.width),
-        deviceHeight: Math.round(rect.height),
+        deviceWidth: frameWidth,
+        deviceHeight: frameHeight,
         timestamp: Date.now() / 1000,
       });
     };

@@ -654,30 +654,6 @@ class Frame {
     for (const context of this._worldNameToContext.values())
       this._runtime.destroyExecutionContext(context);
     this._worldNameToContext.clear();
-
-    // Camoufox: release the master sandbox with the frame.
-    //
-    // This method came from upstream, which has no such field, so when
-    // _masterSandbox was added only the navigation path (_onGlobalObjectCleared)
-    // learned to drop it. A frame that is *destroyed* rather than navigated --
-    // an iframe removed from the DOM, which is what an ad stack does
-    // continuously -- kept it.
-    //
-    // It matters more than an ordinary stale reference: the sandbox is built
-    // over `sandboxPrototype: domWindow` with a system principal, so while it
-    // is alive it holds the window's global, and with it the whole document.
-    // Nuking severs the cross-compartment wrappers so the compartment can
-    // actually go away; dropping the reference alone leaves that to the cycle
-    // collector's goodwill.
-    if (this._masterSandbox) {
-      try {
-        Cu.nukeSandbox(this._masterSandbox);
-      } catch (e) {
-        // Already nuked, or the compartment is gone. Either way the reference
-        // below is what matters, and a throw here would abort frame teardown.
-      }
-      this._masterSandbox = null;
-    }
   }
 
   _addBinding(worldName, name, script) {
@@ -716,12 +692,6 @@ class Frame {
     // global means state written by evaluate() on one page is still there on
     // the next -- every other world starts empty per document.
     this._masterSandbox = null;
-    // Camoufox: open the window.setXxx() fingerprint setters for the init
-    // scripts below. A window is created sealed, so this is the only moment
-    // they exist -- see nsGlobalWindowInner::CamouSettersSealed.
-    const camouInnerWindowId = this.domWindow().windowGlobalChild.innerWindowId;
-    ChromeUtils.camouUnsealFingerprintSetters(camouInnerWindowId);
-
     this._createIsolatedContext('', true);
     for (const [name, world] of this._frameTree._isolatedWorlds) {
       if (name)
@@ -733,19 +703,6 @@ class Frame {
       for (const script of world._scriptsToEvaluateOnNewDocument)
         this._evaluateInitScript(executionContext, script);
     }
-
-    // Close them again. The init scripts have had their turn and page script
-    // has not run yet, so this is the last moment at which nobody untrusted has
-    // been able to look.
-    //
-    // Trusting each setter to remove itself when called only ever covered the
-    // setters a given fingerprint happened to set. A value the config left
-    // alone (no timezone, no IPv6) left its setter sitting on window, and a
-    // launch that registers no init script at all -- Camoufox() +
-    // browser.new_page(), the documented default -- left all fifteen. Fifteen
-    // window properties no other Firefox has is a sharper fingerprint than
-    // anything they were hiding.
-    ChromeUtils.camouSealFingerprintSetters(camouInnerWindowId);
 
     const url = this.domWindow().location?.href;
     if (url === 'about:blank' && !this._url) {

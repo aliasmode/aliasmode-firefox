@@ -31,13 +31,13 @@
 <table>
   <tr>
     <td width="25%" align="center" valign="middle">
-      <a href="https://go.nodemaven.com/camoufoxghsept" target="_blank">
-        <img width="380" alt="nodemaven" src="https://github.com/user-attachments/assets/1e4af9b7-3ebc-4251-96f9-2925c75efb04"/>
+      <a href="https://go.nodemaven.com/daijrogh" target="_blank">
+        <img width="380" alt="nodemaven" src="https://github.com/user-attachments/assets/25015cb5-f1b4-4b49-9e9b-b74dc25037dc"/>
       </a>
     </td>
     <td valign="middle">
-      <a href="https://go.nodemaven.com/camoufoxghsept">NodeMaven</a>: The most efficient proxy provider for Web Scrapping and Automation with the Highest Quality IP on the market.<br>
-      <strong>Why <a href="https://go.nodemaven.com/camoufoxghsept">NodeMaven</a>?</strong><br>
+      <a href="https://go.nodemaven.com/daijrogh">NodeMaven</a>: The most efficient proxy provider for Web Scrapping and Automation with the Highest Quality IP on the market.<br>
+      <strong>Why <a href="https://go.nodemaven.com/daijrogh">NodeMaven</a>?</strong><br>
       • 99.9% uptime<br>
       • ZIP Targeting<br>
       • IP filtering: all proxies have fraud score <97%<br>
@@ -46,43 +46,6 @@
       <strong>Special codes for Camoufox users:</strong><br>
       • <code>CAMOUFOX35</code> - 35% off to Mobile and Residential Proxies<br>
       • <code>CAMOUFOX40</code> - 40% off to ISP (Static) Proxies<br>
-    </td>
-  </tr>
-  <tr>
-    <td width="25%" align="center" valign="middle">
-      <a href="https://node-proxy.com" target="_blank">
-        <img width="380" alt="nodeproxy" src="https://github.com/user-attachments/assets/c25b50a7-cd7d-49ee-bfc1-3b3671ff55ed" />
-      </a>
-    </td>
-    <td valign="middle">
-      <strong>Need proxies for Camoufox?</strong><br>
-      Use <strong><a href="https://node-proxy.com">Node Proxy</a></strong> — a provider of <strong>datacenter, residential and mobile proxies</strong> offering high speed, security and near-100% uptime. <strong>Fully tested and supported in Camoufox.</strong><br>
-      <strong>What sets them apart from other providers</strong><br>
-      • 90+ IP score<br>
-      • HTTP + SOCKS5 — multiprotocol support<br>
-      • Discounts for retail customers<br>
-      • Full B2B support<br>
-      • Ethically sourced IP addresses<br>
-      • Special terms for Enterprise clients<br>
-     <strong>Want to support Camoufox?</strong><br>
-     Just use my promo code <strong><code>CAMOUFOX</code></strong> — it gets you a <strong>30% discount</strong> and supports the developer at the same time.<br>
-     <strong><a href="https://node-proxy.com">Get started at node-proxy.com →</a></strong>
-    </td>
-  </tr>
-  <tr>
-    <td width="25%" align="center" valign="middle">
-      <a href="https://layer3intel.com/?utm_source=github&utm_medium=sponsoring&utm_campaign=camoufox" target="_blank">
-        <img width="380" alt="layer3" src="https://github.com/user-attachments/assets/891ca706-f3a6-4583-81c9-a5e4f6fef80d"/>
-      </a>
-    </td>
-    <td valign="middle">
-      <strong><a href="https://layer3intel.com/?utm_source=github&utm_medium=sponsoring&utm_campaign=camoufox">Layer3 Intel</a> | See your proxies the way anti-bots see them</strong><br>
-      Camoufox hides your browser. Your proxy IP is the part it can't hide. Layer3 Intel is the residential proxy detection engine used to catch proxy traffic — check whether the IPs your provider sells you are clean, or already known and flagged.<br>
-      • 🔍 Live threat score for any IP<br>
-      • 🗂️ Proxy pool membership - identify IP resellers<br>
-      • 📡 70M+ residential, mobile & ISP proxy IPs tracked across 200+ providers<br>
-      • ⚡ <40ms API responses — vet IPs inline before your scraper uses them<br>
-      Check your IPs: <a href="https://layer3intel.com/?utm_source=github&utm_medium=sponsoring&utm_campaign=camoufox">https://layer3intel.com</a>
     </td>
   </tr>
 </table>
@@ -291,25 +254,6 @@ Camoufox is intended to be used with rotating proxies (preferably residential IP
       🎁 <strong>Exclusive for Camoufox users:</strong><br>
       Get free trial traffic after signup + use code <strong>Camoufox</strong> for <strong>10% OFF</strong>.<br>
       <a href="https://www.thordata.com/?ls=dcx&lk=dcx" target="_blank">Start your free trial with Thordata</a>
-  </tr>
-  <tr>
-    <td width="25%" align="center" valign="middle">
-      <a href="https://www.webshare.io/" target="_blank">
-        <img width="380" alt="Webshare" src="https://github.com/user-attachments/assets/b2af0630-bfa9-4f59-a074-d2162a2c8913"/>
-      </a>
-    </td>
-    <td valign="middle">
-      <strong><a href="https://www.webshare.io/">Webshare</a></strong> gives you instant access to a proxy pool of 80M+ ethically-sourced IPs across 195+ countries, with rotating residential, static ISP, and datacenter options plus a full API. It includes a 100+ Gbps backbone, country/city/state/ZIP/ASN-level targeting, and requires no credit card to start.<br>
-      🏷️ Get <strong>20% OFF your first purchase</strong> with promo code <strong><code>CAMOUFOX20</code></strong>
-  </tr>
-  <tr>
-    <td width="25%" align="center" valign="middle">
-      <a href="https://roamproxy.com" target="_blank">
-        <img width="380" alt="Roamproxy" src="https://roamproxy.com/assets/camoufox-banner.png"/>
-      </a>
-    </td>
-    <td valign="middle">
-      <strong><a href="https://roamproxy.com">Roam</a></strong> — Residential & static residential proxies, pay-as-you-go per GB. Use code CAMOUFOX15 for 15% extra credit on your first top-up.
   </tr>
 </table>
 </details>

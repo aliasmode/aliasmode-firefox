@@ -1,4 +1,3 @@
-import hashlib
 import os
 import platform
 import re
@@ -32,7 +31,6 @@ from yaml import CLoader, load
 from .__version__ import CONSTRAINTS
 from .exceptions import (
     CamoufoxNotInstalled,
-    CorruptedDownload,
     MissingRelease,
     ProfileDirectoryError,
     UnsupportedArchitecture,
@@ -950,33 +948,6 @@ def webdl(
 
     buffer.seek(0)
     return buffer
-
-
-def verify_sha256(buffer: DownloadBuffer, expected: Optional[str], desc: str = "asset") -> None:
-    """
-    Check a downloaded buffer against its expected sha256 digest.
-
-    Raises CorruptedDownload on mismatch. Skips silently when no digest is
-    known, so installs from sources that publish no digest still work.
-    """
-    if not expected:
-        rprint(f"Warning: no sha256 published for {desc}; skipping verification.", fg="yellow")
-        return
-
-    buffer.seek(0)
-    digest = hashlib.sha256()
-    for block in iter(lambda: buffer.read(1024 * 1024), b""):
-        digest.update(block)
-    buffer.seek(0)
-
-    actual = digest.hexdigest()
-    if actual != expected.lower():
-        raise CorruptedDownload(
-            f"Checksum mismatch for {desc}.\n"
-            f"  expected sha256: {expected.lower()}\n"
-            f"  actual   sha256: {actual}\n"
-            "The download was corrupted or tampered with. Installation aborted."
-        )
 
 
 def unzip(

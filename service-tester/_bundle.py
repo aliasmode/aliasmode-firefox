@@ -18,8 +18,7 @@ def ensure_bundle() -> Path:
         print("ERROR: build-tester/node_modules not found. Run 'npm install' in build-tester/ first.", file=sys.stderr)
         sys.exit(1)
 
-    esbuild_name = "esbuild.cmd" if sys.platform == "win32" else "esbuild"
-    esbuild = BUILD_TESTER_DIR / "node_modules" / ".bin" / esbuild_name
+    esbuild = BUILD_TESTER_DIR / "node_modules" / ".bin" / "esbuild"
     print("Building checks bundle (first run)...")
     entry = BUILD_TESTER_DIR / "src" / "lib" / "checks" / "index.ts"
     result = subprocess.run(
