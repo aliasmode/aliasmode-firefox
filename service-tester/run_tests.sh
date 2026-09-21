@@ -87,14 +87,14 @@ $PIP uninstall -y camoufox cloverlabs-camoufox >/dev/null 2>&1 || true
 $PIP install -q --force-reinstall ../pythonlib/dist/*.whl
 
 # Locate locally compiled binary
-#  - macOS: Camoufox.app/Contents/MacOS/camoufox (bare bin/camoufox-bin can't find dylibs)
-#  - Linux: bin/camoufox-bin
+#  - macOS: AliasMode.app/Contents/MacOS/aliasmode (bare bin/aliasmode-bin can't find dylibs)
+#  - Linux: bin/aliasmode-bin
 LOCAL_BIN=""
 if [[ "$BINARY_MODE" != "fetched" ]]; then
     if [[ "$(uname -s)" == "Darwin" ]]; then
-        LOCAL_GLOB=(../camoufox-*/obj-*-apple-darwin/dist/Camoufox.app/Contents/MacOS/camoufox)
+        LOCAL_GLOB=(../camoufox-*/obj-*-apple-darwin/dist/AliasMode.app/Contents/MacOS/aliasmode)
     else
-        LOCAL_GLOB=(../camoufox-*/obj-*-linux-*/dist/bin/camoufox-bin)
+        LOCAL_GLOB=(../camoufox-*/obj-*-linux-*/dist/bin/aliasmode-bin)
     fi
     # shellcheck disable=SC2012
     LOCAL_BIN=$(ls -1t "${LOCAL_GLOB[@]}" 2>/dev/null | head -1 || true)

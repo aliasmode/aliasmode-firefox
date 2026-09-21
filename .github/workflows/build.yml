@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        target: [linux, windows, macos]
-        arch: [x86_64, arm64, i686]
+        target: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["windows"]') || fromJSON('["linux", "windows", "macos"]') }}
+        arch: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["x86_64"]') || fromJSON('["x86_64", "arm64", "i686"]') }}
         exclude:
           # Fails (.mozbuild does not include clang++-cl)
           - target: windows
@@ -119,7 +119,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CamoufoxBuilds-${{ matrix.target }}-${{ matrix.arch }}
+          name: AliasModeBuilds-${{ matrix.target }}-${{ matrix.arch }}
           path: dist/*
 
   release:

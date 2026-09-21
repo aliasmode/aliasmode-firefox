@@ -1,0 +1,9 @@
+{
+  "product": "AliasMode",
+  "upstream": {
+    "project": "Camoufox",
+    "release": "v152.0.4-beta.30",
+    "source_revision": "5d06ec1629ac7843508f1e683f83e404fde8db76"
+  },
+  "license": "MPL-2.0"
+}

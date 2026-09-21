@@ -204,7 +204,7 @@ run-pw:
 
 run:
 	cd $(cf_source_dir) \
-	&& rm -rf ~/.camoufox obj-x86_64-pc-linux-gnu/tmp/profile-default \
+	&& rm -rf ~/.aliasmode obj-x86_64-pc-linux-gnu/tmp/profile-default \
 	&& CAMOU_CONFIG=$${CAMOU_CONFIG:-'{}'} \
 	&& CAMOU_CONFIG="$${CAMOU_CONFIG%?}, \"debug\": true}" ./mach run $(args)
 
@@ -246,7 +246,7 @@ workspace:
 tests:
 	cd ./tests && \
 	bash run-tests.sh \
-		--executable-path ../$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
+		--executable-path ../$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode-bin \
 		$(if $(filter true,$(headful)),--headful,)
 
 # Lets tests/patches/*.py run against an unpackaged build. Not needed by `run`
@@ -256,12 +256,12 @@ stage-fonts:
 	bash scripts/stage-fonts.sh $(version) $(release)
 
 unbusy:
-	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
-		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox \
+	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode-bin \
+		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode \
 		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/launch
 
 path:
-	@realpath $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin
+	@realpath $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode-bin
 
 update-ubo-assets:
 	bash ./scripts/update-ubo-assets.sh

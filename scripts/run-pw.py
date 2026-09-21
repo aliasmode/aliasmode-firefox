@@ -61,10 +61,10 @@ def main():
     launcher_path = os.path.abspath(os.path.join('.', 'legacy', 'launcher', 'dist', 'launch'))
 
     with temp_cd(src_dir):
-        print(f'Looking for file: obj-{moz_target}/dist/bin/camoufox-bin')
+        print(f'Looking for file: obj-{moz_target}/dist/bin/aliasmode-bin')
         with temp_cd(f'obj-{moz_target}/dist/bin'):
-            if os.path.exists('camoufox-bin'):
-                # Copy launcher_path to . if we are using camoufox-bin
+            if os.path.exists('aliasmode-bin'):
+                # Copy launcher_path to . if we are using aliasmode-bin
                 shutil.copy(launcher_path, '.')
                 file_name = 'launch'
             elif os.path.exists('firefox-bin'):
