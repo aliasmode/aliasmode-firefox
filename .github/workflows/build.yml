@@ -3,6 +3,8 @@ name: Build and Release
 on:
   workflow_dispatch:
   push:
+    branches:
+      - firefox-engine
     tags:
       - "*"
 
@@ -11,8 +13,8 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        target: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["windows"]') || fromJSON('["linux", "windows", "macos"]') }}
-        arch: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["x86_64"]') || fromJSON('["x86_64", "arm64", "i686"]') }}
+        target: ${{ (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/firefox-engine') && fromJSON('["windows"]') || fromJSON('["linux", "windows", "macos"]') }}
+        arch: ${{ (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/firefox-engine') && fromJSON('["x86_64"]') || fromJSON('["x86_64", "arm64", "i686"]') }}
         exclude:
           # Fails (.mozbuild does not include clang++-cl)
           - target: windows
