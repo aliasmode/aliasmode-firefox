@@ -21,8 +21,8 @@ index e69de29bb2..5459e4ac36 100644
 +++ b/lw/moz.build
 @@ -0,0 +1,15 @@
 +FINAL_TARGET_FILES += [
-+  "camoufox.cfg",
 +  "aliasmode-provenance.json",
++  "camoufox.cfg",
 +  "chrome.css",
 +  "properties.json"
 +]
