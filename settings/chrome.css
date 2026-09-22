@@ -24,6 +24,10 @@
   pointer-events: none !important;
 }
 
+.tab-close-button {
+  pointer-events: auto !important;
+}
+
 /* URL bar height */
 
 :root {
@@ -79,12 +83,6 @@
   .titlebar-spacer[type="post-tabs"] {
     display: block !important;
   }
-}
-
-/* Deactivating close, minimize and maximize buttons */
-.tab-close-button,
-#TabsToolbar .toolbarbutton-1 {
-  display: none !important;
 }
 
 /* Context menu */
