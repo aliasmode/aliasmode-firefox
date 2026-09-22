@@ -1,21 +1,21 @@
 diff --git a/browser/base/content/browser-addons.js b/browser/base/content/browser-addons.js
-index d071b231aa..9bcf162160 100644
+index 56acad9..ec256d0 100644
 --- a/browser/base/content/browser-addons.js
 +++ b/browser/base/content/browser-addons.js
-@@ -1924,6 +1924,8 @@ var gUnifiedExtensions = {
-   // class and not the `.toolbarbutton-1` one. When NOT placed in the panel,
-   // it is the other way around.
-   _updateWidgetClassName(aWidgetId, inPanel) {
-+    inPanel = false;
-+    this.pinToToolbar(aWidgetId, true);
+@@ -3068,6 +3068,8 @@ var gUnifiedExtensions = {
      if (!CustomizableUI.isWebExtensionWidget(aWidgetId)) {
        return;
      }
++    inPanel = false;
++    this.pinToToolbar(aWidgetId, true);
+ 
+     const node = CustomizableUI.getWidget(aWidgetId)?.forWindow(window)?.node;
+     const actionButton = node?.querySelector(
 diff --git a/browser/base/content/main-popupset.inc.xhtml b/browser/base/content/main-popupset.inc.xhtml
-index 1fb595272a..389d436e90 100644
+index ded45fd..9a9a9ec 100644
 --- a/browser/base/content/main-popupset.inc.xhtml
 +++ b/browser/base/content/main-popupset.inc.xhtml
-@@ -286,7 +286,6 @@
+@@ -565,7 +565,6 @@
                type="checkbox"
                contexttype="toolbaritem"
                class="customize-context-pinToToolbar"/>
@@ -23,3 +23,42 @@ index 1fb595272a..389d436e90 100644
      <menuitem id="toolbar-context-always-open-downloads-panel"
                type="checkbox"
                data-lazy-l10n-id="toolbar-context-menu-always-open-downloads-panel"
+diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
+index 45ce02a..1737f97 100644
+--- a/browser/components/customizableui/CustomizableUI.sys.mjs
++++ b/browser/components/customizableui/CustomizableUI.sys.mjs
+@@ -67,7 +67,7 @@ const kSubviewEvents = ["ViewShowing", "ViewHiding"];
+  * The current version. We can use this to auto-add new default widgets as necessary.
+  * (would be const but isn't because of testing purposes)
+  */
+-var kVersion = 24;
++var kVersion = 25;
+ 
+ /**
+  * Buttons removed from built-ins by version they were removed. kVersion must be
+@@ -839,6 +839,25 @@ var CustomizableUIInternal = {
+         navbarPlacements.push("reset-pbm-toolbar-button");
+       }
+     }
++
++    // Repair tab controls moved by AliasMode's former extension-pinning hook.
++    if (currentVersion < 25) {
++      const tabs = gSavedState.placements[CustomizableUI.AREA_TABSTRIP];
++      const navbar = gSavedState.placements[CustomizableUI.AREA_NAVBAR];
++      if (
++        tabs?.length === 1 &&
++        tabs[0] === "tabbrowser-tabs" &&
++        navbar?.includes("new-tab-button") &&
++        navbar.includes("alltabs-button")
++      ) {
++        gSavedState.placements[CustomizableUI.AREA_NAVBAR] = navbar.filter(
++          id => id !== "new-tab-button" && id !== "alltabs-button"
++        );
++        tabs.push("new-tab-button", "alltabs-button");
++        gDirty = true;
++        this.saveState();
++      }
++    }
+   },
+ 
+   /**
