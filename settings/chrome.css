@@ -3,20 +3,12 @@
     Based on https://github.com/Jamir-boop/minimalisticfox
 */
 
-:root {
-  --tab-block-margin: 0 !important;
-}
-.tabbrowser-tab {
-  padding-inline: 0 !important;
-  max-height: 30px !important;
-}
 .tab-context-line {
   display: none !important;
 }
 */ .tab-background {
   /* border-block: 2px solid var(--identity-icon-color,transparent) !important; */
   border-radius: 0px !important;
-  max-height: 30px !important;
 }
 
 /* Disable tab dragging and use it for window movement */
@@ -32,11 +24,9 @@
   pointer-events: none !important;
 }
 
-/* Tab and url height */
+/* URL bar height */
 
 :root {
-  --tab-min-height: 25px !important;
-  --tab-max-height: 25px !important;
   --toolbar-field-focus-border-color: transparent !important;
 }
 
@@ -53,12 +43,6 @@
 }
 
 /* Center tab icons */
-.tab-background {
-  min-height: 0 !important;
-}
-.tabbrowser-tab[fadein] {
-  max-width: 100% !important;
-}
 .tab-text {
   margin: 0 auto !important;
 }
