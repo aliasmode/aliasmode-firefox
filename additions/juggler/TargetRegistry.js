@@ -336,10 +336,38 @@ export class TargetRegistry {
     return this._userContextIdToBrowserContext.get(userContextId);
   }
 
-  async newPage({browserContextId}) {
-    const result = globalNewPageChain.then(() => this._newPageInternal({browserContextId}));
+  async newPage({browserContextId, hidden}) {
+    const result = globalNewPageChain.then(() => hidden
+      ? this._newHiddenPage({browserContextId})
+      : this._newPageInternal({browserContextId}));
     globalNewPageChain = result.catch(error => { /* swallow errors to keep chain running */ });
     return result;
+  }
+
+  // AliasMode: storage-state reads use a hidden background tab, not a flashing window.
+  async _newHiddenPage({browserContextId}) {
+    const browserContext = this.browserContextForId(browserContextId);
+    const window = Services.wm.getMostRecentWindow('navigator:browser');
+    if (!window?.gBrowser)
+      return this._newPageInternal({browserContextId});
+    const tab = window.gBrowser.addTab('about:blank', {
+      inBackground: true,
+      skipAnimation: true,
+      userContextId: browserContext.userContextId,
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    });
+    window.gBrowser.hideTab(tab);
+    const browser = tab.linkedBrowser;
+    let target = this._browserToTarget.get(browser);
+    while (!target) {
+      await helper.awaitEvent(this, TargetRegistry.Events.TargetCreated);
+      target = this._browserToTarget.get(browser);
+    }
+    if (browserContext.crossProcessCookie.settings.timezoneId) {
+      if (await target.hasFailedToOverrideTimezone())
+        throw new Error('Failed to override timezone');
+    }
+    return target.id();
   }
 
   async _newPageInternal({browserContextId}) {
