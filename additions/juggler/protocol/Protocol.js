@@ -272,6 +272,7 @@ const Browser = {
     'newPage': {
       params: {
         browserContextId: t.Optional(t.String),
+        hidden: t.Optional(t.Boolean),
       },
       returns: {
         targetId: t.String,
