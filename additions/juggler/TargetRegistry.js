@@ -7,6 +7,7 @@ const {Preferences} = ChromeUtils.importESModule("resource://gre/modules/Prefere
 const {ContextualIdentityService} = ChromeUtils.importESModule("resource://gre/modules/ContextualIdentityService.sys.mjs");
 const {NetUtil} = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys.mjs');
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
+const {HiddenFrame} = ChromeUtils.importESModule("resource://gre/modules/HiddenFrame.sys.mjs");
 // This module's scope has no timer globals (unlike the content-side juggler
 // scripts), so the screencast tick has to import them explicitly.
 const {setTimeout, clearTimeout} = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
@@ -156,6 +157,8 @@ export class TargetRegistry {
           return;
         target.emit(PageTarget.Events.Crashed);
         target.dispose();
+        if (!target._gBrowser)
+          browser.remove();
       }
     }, 'oop-frameloader-crashed');
 
@@ -344,30 +347,40 @@ export class TargetRegistry {
     return result;
   }
 
-  // AliasMode: storage-state reads use a hidden background tab, not a flashing window.
+  // Storage helpers must stay windowless even after the last user window closes.
   async _newHiddenPage({browserContextId}) {
     const browserContext = this.browserContextForId(browserContextId);
-    const window = Services.wm.getMostRecentWindow('navigator:browser');
-    if (!window?.gBrowser)
-      return this._newPageInternal({browserContextId});
-    const tab = window.gBrowser.addTab('about:blank', {
-      inBackground: true,
-      skipAnimation: true,
-      userContextId: browserContext.userContextId,
-      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
-    });
-    window.gBrowser.hideTab(tab);
-    const browser = tab.linkedBrowser;
-    let target = this._browserToTarget.get(browser);
-    while (!target) {
-      await helper.awaitEvent(this, TargetRegistry.Events.TargetCreated);
-      target = this._browserToTarget.get(browser);
+    this._hiddenFrame ||= new HiddenFrame();
+    const window = await this._hiddenFrame.get();
+    const browser = window.document.createXULElement('browser');
+    browser.setAttribute('type', 'content');
+    browser.setAttribute('remote', 'true');
+    browser.setAttribute('maychangeremoteness', 'true');
+    browser.setAttribute('nodefaultsrc', 'true');
+    browser.setAttribute('disableglobalhistory', 'true');
+    browser.setAttribute('usercontextid', browserContext.userContextId);
+    browser.style.width = '1024px';
+    browser.style.height = '768px';
+    let target;
+    try {
+      window.document.documentElement.appendChild(browser);
+      target = new PageTarget(this, window, { linkedBrowser: browser }, browserContext);
+      target.updateOverridesForBrowsingContext();
+      browser.loadURI(Services.io.newURI('about:blank'), {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      if (browserContext.crossProcessCookie.settings.timezoneId) {
+        if (await target.hasFailedToOverrideTimezone())
+          throw new Error('Failed to override timezone');
+      }
+      return target.id();
+    } catch (error) {
+      if (target)
+        target.close();
+      else
+        browser.remove();
+      throw error;
     }
-    if (browserContext.crossProcessCookie.settings.timezoneId) {
-      if (await target.hasFailedToOverrideTimezone())
-        throw new Error('Failed to override timezone');
-    }
-    return target.id();
   }
 
   async _newPageInternal({browserContextId}) {
@@ -525,6 +538,8 @@ export class PageTarget {
   }
 
   async activateAndRun(callback = () => {}, { muteNotificationsPopup = false } = {}) {
+    if (!this._gBrowser)
+      return callback();
     // Firefox 152 renamed `ownerGlobal` to `documentGlobal` on nodes.
     const ownerWindow = this._tab.linkedBrowser.documentGlobal || this._tab.linkedBrowser.ownerGlobal;
     const tabBrowser = ownerWindow.gBrowser;
@@ -588,7 +603,8 @@ export class PageTarget {
   }
 
   async windowReady() {
-    await waitForWindowReady(this._window);
+    if (this._gBrowser)
+      await waitForWindowReady(this._window);
   }
 
   linkedBrowser() {
@@ -662,7 +678,7 @@ export class PageTarget {
   }
 
   _updateModalDialogs() {
-    const prompts = new Set(this._linkedBrowser.tabDialogBox.getContentDialogManager().dialogs.map(dialog => dialog.frameContentWindow.Dialog));
+    const prompts = new Set(this._linkedBrowser.tabDialogBox?.getContentDialogManager().dialogs.map(dialog => dialog.frameContentWindow.Dialog));
     for (const dialog of this._dialogs.values()) {
       if (!prompts.has(dialog.prompt())) {
         this._dialogs.delete(dialog.id());
@@ -681,8 +697,18 @@ export class PageTarget {
   }
 
   async updateViewportSize() {
-    await waitForWindowReady(this._window);
+    await this.windowReady();
     this.updateDPPXOverride();
+    if (!this._gBrowser) {
+      const viewport = this._viewportSize || this._browserContext.defaultViewportSize;
+      if (viewport) {
+        this._linkedBrowser.style.width = viewport.width + 'px';
+        this._linkedBrowser.style.height = viewport.height + 'px';
+      }
+      const {width, height} = this._linkedBrowser.getBoundingClientRect();
+      await this._channel.connect('').send('awaitViewportDimensions', { width: width / this._zoom, height: height / this._zoom });
+      return;
+    }
 
     // Viewport size is defined by three arguments:
     // 1. default size. Could be explicit if set as part of `window.open` call, e.g.
@@ -792,6 +818,12 @@ export class PageTarget {
   }
 
   close(runBeforeUnload = false) {
+    if (!this._gBrowser) {
+      if (!this._disposed)
+        this.dispose();
+      this._linkedBrowser.remove();
+      return;
+    }
     this._gBrowser.removeTab(this._tab, {
       skipPermitUnload: !runBeforeUnload,
     });
