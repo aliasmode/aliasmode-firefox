@@ -196,6 +196,35 @@ export class TargetRegistry {
     };
 
     const domWindowTabListeners = new Map();
+    const sessionGeneration = Services.env.get('ALIASMODE_FIREFOX_SESSION_GENERATION');
+    const sessionFile = Services.dirsvc.get('ProfD', Ci.nsIFile);
+    sessionFile.append('aliasmode-session-tabs.json');
+    let quitting = false;
+    const userWindows = () => [...Services.wm.getEnumerator('navigator:browser')].filter(window =>
+      !window.closed && window.gBrowser && !window.docShell.usePrivateBrowsing &&
+      [...window.gBrowser.tabs].some(tab => tab.userContextId === 0));
+    const saveTabs = windows => {
+      if (!sessionGeneration || !windows.length)
+        return;
+      const tabs = windows.flatMap(window => [...window.gBrowser.tabs]
+        .filter(tab => tab.userContextId === 0)
+        .map(tab => tab.linkedBrowser.currentURI.spec));
+      const stream = Cc['@mozilla.org/network/safe-file-output-stream;1'].createInstance(Ci.nsIFileOutputStream);
+      try {
+        stream.init(sessionFile, 0x02 | 0x08 | 0x20, 0o600, 0);
+        const output = Cc['@mozilla.org/binaryoutputstream;1'].createInstance(Ci.nsIBinaryOutputStream);
+        output.setOutputStream(stream);
+        output.writeByteArray(new TextEncoder().encode(JSON.stringify({ generation: sessionGeneration, tabs })));
+        stream.QueryInterface(Ci.nsISafeOutputStream).finish();
+      } catch {
+        try { stream.close(); } catch {}
+        dump('WARNING: AliasMode could not save closing tabs\n');
+      }
+    };
+    Services.obs.addObserver(() => {
+      quitting = true;
+      saveTabs(userWindows());
+    }, 'quit-application-granted');
 
     const onOpenWindow = async (appWindow) => {
       let domWindow;
@@ -235,6 +264,10 @@ export class TargetRegistry {
       }
       if (!domWindow.gBrowser)
         return;
+      if (sessionGeneration && !domWindow.docShell.usePrivateBrowsing &&
+          [...domWindow.gBrowser.tabs].some(tab => tab.userContextId === 0)) {
+        try { sessionFile.remove(false); } catch {}
+      }
       const tabContainer = domWindow.gBrowser.tabContainer;
       domWindowTabListeners.set(domWindow, [
         helper.addEventListener(tabContainer, 'TabOpen', event => onTabOpenListener(appWindow, domWindow, event)),
@@ -251,6 +284,10 @@ export class TargetRegistry {
       if (!domWindow.gBrowser)
         return;
 
+      if (!quitting && !domWindow.docShell.usePrivateBrowsing &&
+          [...domWindow.gBrowser.tabs].some(tab => tab.userContextId === 0) &&
+          userWindows().every(window => window === domWindow))
+        saveTabs([domWindow]);
       const listeners = domWindowTabListeners.get(domWindow) || [];
       domWindowTabListeners.delete(domWindow);
       helper.removeListeners(listeners);
