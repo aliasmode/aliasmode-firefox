@@ -24,25 +24,27 @@ index ded45fd..9a9a9ec 100644
                type="checkbox"
                data-lazy-l10n-id="toolbar-context-menu-always-open-downloads-panel"
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
-index 45ce02a..1737f97 100644
+index 6d7b8b6..fd166a7 100644
 --- a/browser/components/customizableui/CustomizableUI.sys.mjs
 +++ b/browser/components/customizableui/CustomizableUI.sys.mjs
-@@ -67,7 +67,7 @@ const kSubviewEvents = ["ViewShowing", "ViewHiding"];
+@@ -68,7 +68,7 @@ const kSubviewEvents = ["ViewShowing", "ViewHiding"];
   * The current version. We can use this to auto-add new default widgets as necessary.
   * (would be const but isn't because of testing purposes)
   */
--var kVersion = 24;
-+var kVersion = 25;
+-var kVersion = 26;
++var kVersion = 27;
  
  /**
   * Buttons removed from built-ins by version they were removed. kVersion must be
-@@ -839,6 +839,25 @@ var CustomizableUIInternal = {
-         navbarPlacements.push("reset-pbm-toolbar-button");
+@@ -917,6 +917,27 @@ var CustomizableUIInternal = {
+         );
        }
      }
 +
 +    // Repair tab controls moved by AliasMode's former extension-pinning hook.
-+    if (currentVersion < 25) {
++    // Firefox 156 uses versions 25 and 26 for its own steps, so this one is 27.
++    // The flexible space is part of the Firefox 156 default tab strip.
++    if (currentVersion < 27) {
 +      const tabs = gSavedState.placements[CustomizableUI.AREA_TABSTRIP];
 +      const navbar = gSavedState.placements[CustomizableUI.AREA_NAVBAR];
 +      if (
@@ -54,7 +56,7 @@ index 45ce02a..1737f97 100644
 +        gSavedState.placements[CustomizableUI.AREA_NAVBAR] = navbar.filter(
 +          id => id !== "new-tab-button" && id !== "alltabs-button"
 +        );
-+        tabs.push("new-tab-button", "alltabs-button");
++        tabs.push("new-tab-button", "spring", "alltabs-button");
 +        gDirty = true;
 +        this.saveState();
 +      }
