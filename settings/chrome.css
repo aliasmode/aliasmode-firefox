@@ -28,22 +28,18 @@
   pointer-events: auto !important;
 }
 
-/* URL bar height */
+/*
+    Do not set toolbar or URL bar sizes in this file. A page can measure the
+    browser chrome (outerHeight - innerHeight, mozInnerScreenY - screenY), so
+    its size must stay the size Firefox gives it on each platform and density.
+*/
 
 :root {
   --toolbar-field-focus-border-color: transparent !important;
 }
 
 #navigator-toolbox :-moz-any(#nav-bar) {
-  min-height: 30px !important;
-  max-height: 30px !important;
-  margin-top: 0px !important;
   z-index: 5 !important;
-}
-
-/* fix urlbar being too high in ff 74 */
-* {
-  --urlbar-toolbar-height: 30px !important;
 }
 
 /* Center tab icons */
@@ -112,17 +108,6 @@ panel {
 }
 
 /* Make URL bar black when not focused */
-#urlbar-container {
-  --urlbar-container-height: 30px !important;
-}
-
-#urlbar {
-  --urlbar-height: 30px !important;
-  --urlbar-toolbar-height: 30px !important;
-  min-height: 30px !important;
-  max-height: 30px !important;
-}
-
 #urlbar:not(:focus-within):not([open]) > #urlbar-background {
   background-color: transparent !important;
   border: none !important;
@@ -140,16 +125,16 @@ panel {
   box-shadow: none !important;
 }
 
-/* Cleanup menu bar */
+/*
+    Cleanup menu bar. Hide only items that do not change the chrome size.
+    Notification bars, the bookmarks toolbar and the window controls that move
+    to the nav bar with vertical tabs keep Firefox's own visibility.
+*/
 #tracking-protection-icon-container,
-#tab-notification-deck,
 #star-button-box,
 #urlbar-go-button,
 #unified-extensions-button,
 .customize-context-pinToToolbar,
-#PersonalToolbar,
-toolbar#nav-bar > .titlebar-buttonbox-container,
-toolbar#nav-bar > .titlebar-spacer,
 #appMenu-library-remotetabs-button {
   display: none !important;
 }
