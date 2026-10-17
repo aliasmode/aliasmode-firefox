@@ -43,6 +43,7 @@
   { "property": "humanize:maxTime", "type": "double" },
   { "property": "humanize:minTime", "type": "double" },
   { "property": "showcursor", "type": "bool" },
+  { "property": "aliasmode:windowLabel", "type": "str" },
   { "property": "AudioContext:sampleRate", "type": "uint" },
   { "property": "AudioContext:outputLatency", "type": "double" },
   { "property": "AudioContext:maxChannelCount", "type": "uint" },

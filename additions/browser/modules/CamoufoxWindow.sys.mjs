@@ -237,6 +237,22 @@ function addDebugListeners(win) {
   win.gURLBar?.addEventListener("change", () => debug("URL bar value changed to: " + win.gURLBar.value));
 }
 
+function applyWindowLabel(win) {
+  // The label leads the OS window title (taskbar, window switcher), so a user
+  // can tell profiles apart. Only the browser window's own title changes; a
+  // page's document.title is untouched.
+  const label = ChromeUtils.camouGetString("aliasmode:windowLabel");
+  if (!label) {
+    return;
+  }
+  const gBrowser = win.gBrowser;
+  const stockTitle = gBrowser.getWindowTitleForBrowser;
+  gBrowser.getWindowTitleForBrowser = function (browser) {
+    return label + " — " + stockTitle.call(this, browser);
+  };
+  gBrowser.updateTitlebar();
+}
+
 function addCursorFollower(win) {
   // Debugging aid only: a visible automation cue, so opt-in (showcursor=true).
   if (!ChromeUtils.camouGetBool("showcursor", false)) {
@@ -280,7 +296,7 @@ export const CamoufoxWindow = {
   // Called from gBrowserInit.onLoad() with the window. The category's jsGlobal
   // is consumed by BrowserUtils.callModulesFromCategory, not passed on.
   onWindowLoad(win) {
-    for (const step of [applyWindowSize, addDebugListeners, addCursorFollower]) {
+    for (const step of [applyWindowSize, applyWindowLabel, addDebugListeners, addCursorFollower]) {
       try {
         step(win);
       } catch (e) {
