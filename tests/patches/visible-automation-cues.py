@@ -6,7 +6,7 @@ Two cues a real Firefox never draws, neither readable by page JS:
   78. Every Playwright browser context is a Firefox container. A PUBLIC container
       renders its name ("JUGGLER <id>") and colour in the URL bar and tab strip.
       additions/juggler/TargetRegistry.js marks juggler's identities non-public.
-  79. browser-init.patch adds a #cursor-highlighter dot following the mouse when
+  79. CamoufoxWindow.sys.mjs adds a #cursor-highlighter dot following the mouse when
       the `showcursor` config is true -- and the default used to be true.
 
 The guard launches camoufox through Playwright, headed on a private Xvfb display,

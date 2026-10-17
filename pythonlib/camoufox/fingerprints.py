@@ -944,7 +944,7 @@ def clamp_screen_to_display(
     filters the fingerprint pool too far: FingerprintGenerator.partial_csp
     swallows the resulting failure and deletes the constraint unless strict=True.
     So the bound from get_screen_cons() is best-effort only, and a 1366x768
-    laptop routinely gets a 2560x1440 fingerprint. browser-init.patch resizes the
+    laptop routinely gets a 2560x1440 fingerprint. CamoufoxWindow.sys.mjs resizes the
     real chrome window to window.outerWidth/outerHeight, so an unbounded value
     renders past the edge of the monitor (daijro/camoufox#499).
 

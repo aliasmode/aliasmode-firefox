@@ -505,13 +505,13 @@ For per-context geolocation, use Playwright's built-in `context.setGeolocation()
 
 ### locale-spoofing.patch
 
-**What it adds:** Overrides `navigator.language`, `Accept-Language` header, and `Intl` locale APIs. Hooks `browser-init.js` (sets `intl.accept_languages` pref), `Locale.cpp/h` (language/script/region getters), and `OSPreferences.cpp` (system locale).
+**What it adds:** Overrides `navigator.language`, `Accept-Language` header, and `Intl` locale APIs. Sets the `intl.accept_languages` pref at startup (`CamoufoxWindow.sys.mjs`), and hooks `Locale.cpp/h` (language/script/region getters), and `OSPreferences.cpp` (system locale).
 
 ```json
 { "navigator.language": "en-US", "locale:all": "en-US", "locale:language": "en", "locale:region": "US" }
 ```
 
-**Modified:** `browser-init.js`, `Locale.cpp`, `Locale.h`, `OSPreferences.cpp`
+**Modified:** `Locale.cpp`, `Locale.h`, `OSPreferences.cpp`
 
 ### force-default-pointer.patch
 

@@ -133,7 +133,7 @@ class TestClampWindowDimensions:
 class TestClampScreenToDisplay:
     def test_shrinks_screen_to_display(self):
         # BrowserForge routinely ships a 2560x1440 fingerprint to a 1366x768
-        # laptop; browser-init then resizes the real window past the monitor.
+        # laptop; CamoufoxWindow then resizes the real window past the monitor.
         c = {
             "screen.width": 2560,
             "screen.height": 1440,
