@@ -108,7 +108,50 @@ function importCertificates() {
   }
 }
 
+// The available area of the screen the identity claims. Outside fullscreen a
+// real window is never larger than the available area of its screen.
+function claimedAvailSize() {
+  const width = ChromeUtils.camouGetInt("screen.availWidth");
+  const height = ChromeUtils.camouGetInt("screen.availHeight");
+  return width && height ? { width, height } : null;
+}
+
+function keepInsideClaimedScreen(win) {
+  const avail = claimedAvailSize();
+  if (!avail) {
+    return;
+  }
+  // A resize or maximize past the claimed screen is undone. Fullscreen covers
+  // the real screen and is left alone, so video keeps playing. A size the
+  // window manager refuses is not asked for again.
+  let lastTarget = "";
+  const fit = () => {
+    const state = win.windowState;
+    if (win.fullScreen || (state !== win.STATE_NORMAL && state !== win.STATE_MAXIMIZED)) {
+      return;
+    }
+    const width = Math.min(win.outerWidth, avail.width);
+    const height = Math.min(win.outerHeight, avail.height);
+    if (width === win.outerWidth && height === win.outerHeight) {
+      lastTarget = "";
+      return;
+    }
+    if (lastTarget === `${width}x${height}`) {
+      return;
+    }
+    lastTarget = `${width}x${height}`;
+    if (win.windowState === win.STATE_MAXIMIZED) {
+      win.restore();
+    }
+    win.resizeTo(width, height);
+  };
+  win.addEventListener("resize", fit);
+  win.addEventListener("sizemodechange", fit);
+  fit();
+}
+
 function applyWindowSize(win) {
+  keepInsideClaimedScreen(win);
   // outerWidth/outerHeight report the real window, so the real window is resized
   // to the identity's size; pinning the document instead deadlocks Juggler's
   // viewport handshake (daijro/camoufox#666). Without an identity size, stock's
@@ -120,8 +163,10 @@ function applyWindowSize(win) {
   if (appWindow.initialOpenWindowInfo) {
     return;
   }
-  const outerWidth = ChromeUtils.camouGetInt("window.outerWidth");
-  const outerHeight = ChromeUtils.camouGetInt("window.outerHeight");
+  // The identity's size is the first size only, and never more than its screen.
+  const avail = claimedAvailSize();
+  const outerWidth = Math.min(ChromeUtils.camouGetInt("window.outerWidth"), avail?.width ?? Infinity);
+  const outerHeight = Math.min(ChromeUtils.camouGetInt("window.outerHeight"), avail?.height ?? Infinity);
   if (outerWidth || outerHeight) {
     win.resizeTo(outerWidth || win.outerWidth, outerHeight || win.outerHeight);
     // Hold that size through startup. mutter auto-maximizes a new window

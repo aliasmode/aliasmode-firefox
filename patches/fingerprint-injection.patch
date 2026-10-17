@@ -59,7 +59,7 @@ index fb3a1f640d..bc65e5256b 100644
  int32_t nsGlobalWindowInner::GetOuterWidth(CallerType aCallerType,
                                             ErrorResult& aError) {
 +  // Camoufox: window.outerWidth/outerHeight are deliberately NOT read from
-+  // MaskConfig. browser-init.js resizes the real window to the drawn size, and
++  // MaskConfig. CamoufoxWindow.sys.mjs sizes the real window, and
 +  // innerWidth/innerHeight report the real content area, so a fixed outer size
 +  // contradicted inner whenever the window ended up a different size: the WM
 +  // clamped or auto-maximized it, or Juggler resized it for a viewport. Pages
@@ -67,21 +67,7 @@ index fb3a1f640d..bc65e5256b 100644
    FORWARD_TO_OUTER_OR_THROW(GetOuterWidthOuter, (aCallerType, aError), aError,
                              0);
  }
-@@ -3764,11 +3775,13 @@ double nsGlobalWindowInner::ScreenEdgeSlopY() const {
- 
- int32_t nsGlobalWindowInner::GetScreenX(CallerType aCallerType,
-                                         ErrorResult& aError) {
-+  if (auto value = MaskConfig::GetInt32("window.screenX")) return value.value();
-   FORWARD_TO_OUTER_OR_THROW(GetScreenXOuter, (aCallerType, aError), aError, 0);
- }
- 
- int32_t nsGlobalWindowInner::GetScreenY(CallerType aCallerType,
-                                         ErrorResult& aError) {
-+  if (auto value = MaskConfig::GetInt32("window.screenY")) return value.value();
-   FORWARD_TO_OUTER_OR_THROW(GetScreenYOuter, (aCallerType, aError), aError, 0);
- }
- 
-@@ -3802,6 +3815,8 @@ static nsPresContext* GetPresContextForRatio(Document* aDoc) {
+@@ -3802,6 +3813,8 @@ static nsPresContext* GetPresContextForRatio(Document* aDoc) {
  double nsGlobalWindowInner::GetDevicePixelRatio(CallerType aCallerType,
                                                  ErrorResult& aError) {
    ENSURE_ACTIVE_DOCUMENT(aError, 0.0);
