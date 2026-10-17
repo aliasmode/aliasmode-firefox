@@ -584,8 +584,8 @@ Two things make that dangerous, and both are closed and mutation-tested:
 
 | Trap | What closes it |
 | --- | --- |
-| `additions/juggler/` is **not** all JavaScript — it holds the screencast encoder and the debugging pipe (5 `.cpp`, 5 `.h`, 2 `.idl`, 3 `components.conf`, 4 `moz.build`) | Only files `jar.mn` actually lists are resources. Everything else — including any extension nobody has considered yet — is native and forces a build. `jar.mn` itself is native, so removing an entry cannot leave a stale file behind |
-| The source→destination mapping is **per-file, not a prefix** | It is read from `jar.mn`. `TargetRegistry.js` → `content/TargetRegistry.js` (a level added), `content/FrameTree.js` → `content/content/FrameTree.js` (preserved), `content/JugglerFrameChild.sys.mjs` → `content/JugglerFrameChild.sys.mjs` (dropped). Two files in one source directory landing at different depths is exactly what a prefix rule gets wrong — and it would run stale Juggler while every suite went green |
+| `additions/juggler/` is **not** all JavaScript — it holds the screencast encoder and the debugging pipe (5 `.cpp`, 5 `.h`, 2 `.idl`, 3 `components.conf`, 4 `moz.build`) | Only files Juggler's `moz.build` lists in `FINAL_TARGET_FILES` are resources. Everything else — including any extension nobody has considered yet — is native and forces a build. That `moz.build` is itself native, so removing an entry cannot leave a stale file behind |
+| The source→destination mapping is **per-file, not a prefix** | It is read from `moz.build`. `content/FrameTree.js` → `modules/juggler/content/FrameTree.js` (preserved), `content/JugglerFrameChild.sys.mjs` → `modules/juggler/JugglerFrameChild.sys.mjs` (dropped). Two files in one source directory landing at different depths is exactly what a prefix rule gets wrong — and it would run stale Juggler while every suite went green |
 
 **A browser that is already built is not built again.** `browser_changed` is
 computed against the pull request's *base*, so it stays true for every push to a

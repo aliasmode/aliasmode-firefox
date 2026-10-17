@@ -33,14 +33,14 @@ Camoufox changes include the isolated-world page agent and the human cursor
 
 - **`components/Juggler.js`** - Main Juggler component, an ES module that exports `JugglerFactory`
 - **`components/components.conf`** - XPCOM component registration
-- **`jar.mn`** - What gets packaged into `chrome://juggler/content/`
+- **`moz.build`** - What gets installed under `resource://gre/modules/juggler/` (`FINAL_TARGET_FILES`). Juggler is not a chrome package: a page can detect a registered one
 
 `components.conf` registers the component with the `esModule` field (Firefox
 no longer supports `jsm`):
 
 ```python
 {
-    "esModule": "chrome://juggler/content/components/Juggler.js",
+    "esModule": "resource://gre/modules/juggler/components/Juggler.js",
     "constructor": "JugglerFactory",
 }
 ```
@@ -75,7 +75,10 @@ update, check that:
 1. `Juggler.js` still exports `JugglerFactory`, and `components.conf` still
    names it as the `constructor`.
 2. `components.conf` uses `esModule`, not `jsm`.
-3. Every file upstream added or renamed is listed in `jar.mn`.
+3. Every file upstream added or renamed is listed in `FINAL_TARGET_FILES` in
+   `juggler/moz.build`. Upstream registers a `juggler` chrome package in
+   `jar.mn`; this build does not, so upstream's `chrome://juggler/content/`
+   paths become `resource://gre/modules/juggler/`.
 
 ### 3. Test
 
@@ -129,7 +132,7 @@ This means `components.conf` is not using ESM format. Fix by ensuring it has:
 If the build fails after updating Juggler files:
 
 1. Check that every `ChromeUtils.importESModule()` path in the Juggler files still exists
-2. Check that new or renamed files are listed in `jar.mn`
+2. Check that new or renamed files are listed in `juggler/moz.build`
 3. Check for Firefox API changes that might require patches
 
 ## References
