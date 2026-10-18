@@ -8,7 +8,7 @@ debs := python3 python3-dev python3-pip p7zip-full msitools wget aria2 libsqlite
 rpms := python3 python3-devel p7zip msitools wget aria2 sqlite-devel
 pacman := python python-pip p7zip msitools wget aria2 sqlite
 
-.PHONY: help fetch fetch-fonts fonts-extract fonts-check fonts-clean setup setup-minimal clean set-target distclean build package \
+.PHONY: help fetch fetch-fonts fonts-extract fonts-check fonts-clean font-packs setup setup-minimal clean set-target distclean build package \
         revert run bootstrap mozbootstrap dir \
         package-linux package-macos package-windows patch unpatch diff \
         workspace check-arg edit-cfg ff-dbg tests update-ubo-assets generate-assets-car \
@@ -157,7 +157,10 @@ build: unbusy
 	fi
 	cd $(cf_source_dir) && ./mach build $(_ARGS)
 
-package-linux: fonts-extract
+# The packages carry no fonts of other OSes, only what Firefox itself ships in
+# fonts/ (TwemojiMozilla.ttf). A profile of another OS reads that OS's font
+# pack, which the app downloads on demand (font-packs below, font-pack-dir.patch).
+package-linux:
 	python3 scripts/package.py linux \
 		--includes \
 			settings/chrome.css \
@@ -165,20 +168,18 @@ package-linux: fonts-extract
 			bundle/fontconfig \
 		--version $(version) \
 		--release $(release) \
-		--arch $(arch) \
-		--fonts windows macos linux
+		--arch $(arch)
 
-package-macos: fonts-extract
+package-macos:
 	python3 scripts/package.py macos \
 		--includes \
 			settings/chrome.css \
 			settings/properties.json \
 		--version $(version) \
 		--release $(release) \
-		--arch $(arch) \
-		--fonts windows macos linux
+		--arch $(arch)
 
-package-windows: fonts-extract
+package-windows:
 	python3 scripts/package.py windows \
 		--includes \
 			settings/chrome.css \
@@ -186,8 +187,10 @@ package-windows: fonts-extract
 			~/.mozbuild/vs/VC/Redist/MSVC/*/$(vcredist_arch)/Microsoft.VC*.CRT/*.dll \
 		--version $(version) \
 		--release $(release) \
-		--arch $(arch) \
-		--fonts windows macos linux
+		--arch $(arch)
+
+font-packs:
+	python3 scripts/package-font-packs.py --out dist
 
 run:
 	cd $(cf_source_dir) \

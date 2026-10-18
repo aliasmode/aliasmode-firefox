@@ -165,7 +165,11 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target, ver
         fonts_dir = os.path.join(target_dir, 'fonts')
         groups_file = os.path.join('bundle', 'fonts', 'groups.json')
         wanted = font_groups_for(groups_file, fonts or [])
-        if wanted is None:
+        if not fonts:
+            # The default: no font sets, only what Firefox ships in fonts/. The
+            # app downloads a font pack per OS instead (package-font-packs.py).
+            pass
+        elif wanted is None:
             legacy_font_copy(target, fonts, fonts_dir)
         elif target == 'linux':
             # Linux resolves fonts through fontconfig, which is handed the exact

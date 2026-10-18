@@ -27,6 +27,7 @@ be listed there.
 | `chromeutil.patch` | `debug` |
 | `fingerprint-injection.patch` | `navigator.*`, `screen.*`, `window.*` |
 | `font-hijacker.patch` | `navigator.platform` |
+| `font-pack-dir.patch` | `aliasmode:fontsDir` (a font pack directory activated with the bundled `fonts/`; needs `font-hijacker.patch`) |
 | `font-system-fonts-css2.patch` | `navigator.platform`, `window.devicePixelRatio` |
 | `force-default-pointer.patch` | `navigator.maxTouchPoints` |
 | `geolocation-spoofing.patch` | `geolocation:*` |

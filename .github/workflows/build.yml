@@ -122,8 +122,27 @@ jobs:
           name: AliasModeBuilds-${{ matrix.target }}-${{ matrix.arch }}
           path: dist/*
 
+  font-packs:
+    # One zip of fonts per OS family (scripts/package-font-packs.py). The engine
+    # packages carry none; the app downloads the pack a profile needs.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Build font packs
+        run: make font-packs
+
+      - name: Upload font packs
+        uses: actions/upload-artifact@v4
+        with:
+          name: AliasModeFontPacks
+          path: dist/*
+          compression-level: 0
+
   release:
-    needs: build
+    needs: [build, font-packs]
     permissions:
       contents: write
     runs-on: ubuntu-latest
