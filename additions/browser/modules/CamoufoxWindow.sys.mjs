@@ -116,34 +116,117 @@ function claimedAvailSize() {
   return width && height ? { width, height } : null;
 }
 
-function keepInsideClaimedScreen(win) {
+// The real available area of the screen the window is on. window.screen
+// reports the claimed screen, also to chrome code.
+function realAvailRect(win) {
+  const screen = Cc["@mozilla.org/gfx/screenmanager;1"]
+    .getService(Ci.nsIScreenManager)
+    .screenForRect(win.screenX, win.screenY, win.outerWidth, win.outerHeight);
+  const [x, y, width, height] = [{}, {}, {}, {}];
+  screen.GetAvailRectDisplayPix(x, y, width, height);
+  return { x: x.value, y: y.value, width: width.value, height: height.value };
+}
+
+// Keeps the window inside the claimed screen and, given the identity's first
+// size, holds that size through startup: mutter auto-maximizes a new window
+// covering >= 80% of the work area, and GTK adds its decoration margins to the
+// outer size only once the window is mapped, which left a page reading the
+// identity's size plus 10px. After five seconds a change is the user's.
+// Fullscreen covers the real screen and is left alone, so video keeps playing.
+function keepInsideClaimedScreen(win, startupSize) {
   const avail = claimedAvailSize();
-  if (!avail) {
+  if (!avail && !startupSize) {
     return;
   }
-  // A resize or maximize past the claimed screen is undone. Fullscreen covers
-  // the real screen and is left alone, so video keeps playing. A size the
-  // window manager refuses is not asked for again.
-  let lastTarget = "";
-  const fit = () => {
-    const state = win.windowState;
-    if (win.fullScreen || (state !== win.STATE_NORMAL && state !== win.STATE_MAXIMIZED)) {
+  let holdUntil = startupSize ? Date.now() + 5000 : 0;
+  // The window a maximize gave on a screen larger than the claimed one, and
+  // the window before it.
+  let maximized = null;
+  // A size the window manager refuses is not asked for again.
+  let refused = "";
+  let busy = false;
+  const bounds = () => ({ x: win.screenX, y: win.screenY, width: win.outerWidth, height: win.outerHeight });
+  const place = b => {
+    win.moveTo(b.x, b.y);
+    win.resizeTo(b.width, b.height);
+  };
+  const near = (a, b) => ["x", "y", "width", "height"].every(k => Math.abs(a[k] - b[k]) <= 2);
+  const fitMaximized = () => {
+    const real = avail && realAvailRect(win);
+    // On a screen no larger than the claimed one the window stays maximized.
+    if (!real || (real.width <= avail.width && real.height <= avail.height)) {
       return;
     }
+    // On a larger screen it gets what a maximize gives on the claimed screen,
+    // its whole available area, here at the corner of the real one. Maximizing
+    // that window again puts back the window from before, as a restore does.
+    win.restore();
+    const before = bounds();
+    if (maximized && near(before, maximized.window)) {
+      place(maximized.before);
+      maximized = null;
+      return;
+    }
+    maximized = {
+      window: { x: real.x, y: real.y, width: Math.min(real.width, avail.width), height: Math.min(real.height, avail.height) },
+      before,
+    };
+    place(maximized.window);
+  };
+  const fitNormal = () => {
+    if (Date.now() < holdUntil) {
+      const dw = startupSize.width ? startupSize.width - win.outerWidth : 0;
+      const dh = startupSize.height ? startupSize.height - win.outerHeight : 0;
+      if (dw || dh) {
+        win.resizeBy(dw, dh);
+      }
+      return;
+    }
+    if (!avail) {
+      return;
+    }
+    // A resize past the claimed screen is undone.
     const width = Math.min(win.outerWidth, avail.width);
     const height = Math.min(win.outerHeight, avail.height);
     if (width === win.outerWidth && height === win.outerHeight) {
-      lastTarget = "";
+      refused = "";
       return;
     }
-    if (lastTarget === `${width}x${height}`) {
+    if (refused === `${width}x${height}`) {
       return;
     }
-    lastTarget = `${width}x${height}`;
-    if (win.windowState === win.STATE_MAXIMIZED) {
-      win.restore();
-    }
+    refused = `${width}x${height}`;
     win.resizeTo(width, height);
+  };
+  // Events it causes itself while it runs are ignored.
+  const run = (state, step) => {
+    if (busy || win.closed || win.fullScreen || win.windowState !== state) {
+      return;
+    }
+    busy = true;
+    try {
+      step();
+    } finally {
+      busy = false;
+    }
+  };
+  let maximizePending = false;
+  const fit = () => {
+    if (win.windowState !== win.STATE_MAXIMIZED) {
+      run(win.STATE_NORMAL, fitNormal);
+      return;
+    }
+    // A maximize, the user's or the window manager's, ends the startup hold.
+    holdUntil = 0;
+    // Answered once the maximize is done: a window restored from inside it
+    // on Windows stays where the maximize put it, with its title bar off screen.
+    if (!maximizePending) {
+      maximizePending = true;
+      Services.tm.dispatchToMainThread(() => {
+        maximizePending = false;
+        run(win.STATE_MAXIMIZED, fitMaximized);
+      });
+    }
   };
   win.addEventListener("resize", fit);
   win.addEventListener("sizemodechange", fit);
@@ -151,7 +234,6 @@ function keepInsideClaimedScreen(win) {
 }
 
 function applyWindowSize(win) {
-  keepInsideClaimedScreen(win);
   // outerWidth/outerHeight report the real window, so the real window is resized
   // to the identity's size; pinning the document instead deadlocks Juggler's
   // viewport handshake (daijro/camoufox#666). Without an identity size, stock's
@@ -161,6 +243,7 @@ function applyWindowSize(win) {
     .QueryInterface(Ci.nsIInterfaceRequestor)
     .getInterface(Ci.nsIAppWindow);
   if (appWindow.initialOpenWindowInfo) {
+    keepInsideClaimedScreen(win, null);
     return;
   }
   // The identity's size is the first size only, and never more than its screen.
@@ -169,29 +252,8 @@ function applyWindowSize(win) {
   const outerHeight = Math.min(ChromeUtils.camouGetInt("window.outerHeight"), avail?.height ?? Infinity);
   if (outerWidth || outerHeight) {
     win.resizeTo(outerWidth || win.outerWidth, outerHeight || win.outerHeight);
-    // Hold that size through startup. mutter auto-maximizes a new window
-    // covering >= 80% of the work area, and GTK adds its decoration margins to
-    // the outer size only once the window is mapped, which left a page reading
-    // the identity's size plus 10px. After the deadline a change is the user's.
-    const deadline = Date.now() + 5000;
-    const holdStartupSize = () => {
-      if (Date.now() > deadline) {
-        win.removeEventListener("sizemodechange", holdStartupSize);
-        win.removeEventListener("resize", holdStartupSize);
-        return;
-      }
-      if (win.windowState === win.STATE_MAXIMIZED) {
-        win.restore();
-      }
-      const dw = outerWidth ? outerWidth - win.outerWidth : 0;
-      const dh = outerHeight ? outerHeight - win.outerHeight : 0;
-      if (dw || dh) {
-        win.resizeBy(dw, dh);
-      }
-    };
-    win.addEventListener("sizemodechange", holdStartupSize);
-    win.addEventListener("resize", holdStartupSize);
   }
+  keepInsideClaimedScreen(win, outerWidth || outerHeight ? { width: outerWidth, height: outerHeight } : null);
 
   const innerWidth = ChromeUtils.camouGetInt("window.innerWidth");
   const innerHeight = ChromeUtils.camouGetInt("window.innerHeight");
