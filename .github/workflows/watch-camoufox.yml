@@ -1,0 +1,34 @@
+name: Watch Camoufox releases
+
+# Daily check: fails, so GitHub emails a failed-run notice, when Camoufox has released a
+# build on a newer Firefox than our newest AliasMode Firefox runtime. It passes again once
+# an aliasmode-runtime release on that Firefox version is published here.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare Camoufox's Firefox version with ours
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_tag=$(gh api "repos/daijro/camoufox/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name')
+          ours_tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" --jq '[.[] | select(.tag_name | startswith("aliasmode-runtime-"))][0].tag_name')
+          upstream=$(printf '%s' "$upstream_tag" | sed -E 's/^v?([0-9]+(\.[0-9]+)*).*/\1/')
+          ours=$(printf '%s' "$ours_tag" | sed -E 's/^aliasmode-runtime-([0-9]+(\.[0-9]+)*).*/\1/')
+          echo "Camoufox: $upstream_tag (Firefox $upstream)"
+          echo "AliasMode Firefox: $ours_tag (Firefox $ours)"
+          newest=$(printf '%s\n%s\n' "$upstream" "$ours" | sort -V | tail -n 1)
+          if [ "$newest" != "$ours" ]; then
+            echo "::error title=Camoufox moved to Firefox $upstream::Camoufox $upstream_tag is on Firefox $upstream; AliasMode Firefox is on $ours ($ours_tag). https://github.com/daijro/camoufox/releases/tag/$upstream_tag"
+            exit 1
+          fi
+          echo "AliasMode Firefox is on Camoufox's Firefox version."
