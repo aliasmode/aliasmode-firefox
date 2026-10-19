@@ -15,7 +15,7 @@ diff --git a/dom/canvas/AliasModeReadbackNoise.h b/dom/canvas/AliasModeReadbackN
 new file mode 100644
 --- /dev/null
 +++ b/dom/canvas/AliasModeReadbackNoise.h
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,176 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -25,6 +25,7 @@ new file mode 100644
 +
 +#include <cstddef>
 +#include <cstdint>
++#include <vector>
 +
 +#include "MaskConfig.hpp"
 +
@@ -40,10 +41,11 @@ new file mode 100644
 +//   same pixels agrees, and a profile reads the same bytes on every launch.
 +// - Reading, writing back and reading again changes nothing: the step only
 +//   touches the bits the key ignores.
-+// - Only opaque pixels that differ from all four direct neighbours are
-+//   eligible: anti-aliased edges and blends, where rasterizers differ between
-+//   machines. Flat fills, rectangle edges, gradients along one axis and
-+//   transparent pixels read back exactly as drawn.
++// - Only opaque pixels that differ from all four direct neighbours, away from
++//   the image's edge and from cleared pixels, are eligible: anti-aliased
++//   edges and blends, where rasterizers differ between machines. Flat fills,
++//   rectangle edges, gradients along one axis, transparent pixels and tiny
++//   probe canvases read back exactly as drawn.
 +namespace mozilla::readback_noise {
 +
 +inline uint64_t Mix(uint64_t aValue) {
@@ -102,27 +104,32 @@ new file mode 100644
 +  }
 +};
 +
-+// The lowest bits of red, green and blue (bits 0, 1, 2) the pixel at
-+// (aX, aY) reads back with, or -1 when it reads back as drawn.
-+inline int32_t Bits(const Image& aImage, int32_t aX, int32_t aY,
-+                    uint64_t aSeed) {
-+  if (!aImage.Opaque(aX, aY)) {
++// The lowest bits of red, green and blue (bits 0, 1, 2) for the opaque pixel
++// at column aI of aRow, between aAbove and aBelow, or -1 to keep it as drawn.
++inline int32_t Bits(const uint32_t* aAbove, const uint32_t* aRow,
++                    const uint32_t* aBelow, size_t aI, uint64_t aSeed) {
++  const uint32_t centre = aRow[aI];
++  const uint32_t up = aAbove[aI];
++  const uint32_t left = aRow[aI - 1];
++  const uint32_t right = aRow[aI + 1];
++  const uint32_t down = aBelow[aI];
++  if (centre == up || centre == left || centre == right || centre == down) {
 +    return -1;
 +  }
-+  const uint32_t centre = aImage.Coarse(aX, aY);
-+  if (centre == aImage.Coarse(aX - 1, aY) ||
-+      centre == aImage.Coarse(aX + 1, aY) ||
-+      centre == aImage.Coarse(aX, aY - 1) ||
-+      centre == aImage.Coarse(aX, aY + 1)) {
++  // Next to the edge of the image or to a cleared pixel: the pixels of a tiny
++  // probe canvas, which are known per engine, stay exact.
++  if (!up || !left || !right || !down || !aAbove[aI - 1] ||
++      !aAbove[aI + 1] || !aBelow[aI - 1] || !aBelow[aI + 1]) {
 +    return -1;
 +  }
-+  uint64_t hash = aSeed;
-+  for (int32_t dy = -1; dy <= 1; ++dy) {
-+    for (int32_t dx = -1; dx <= 1; ++dx) {
-+      hash = Mix(hash ^ aImage.Coarse(aX + dx, aY + dy));
-+    }
-+  }
-+  return int32_t(hash >> 61);
++  const uint64_t hash =
++      aSeed + centre * 0x9e3779b97f4a7c15ull + up * 0xc2b2ae3d27d4eb4full +
++      left * 0x165667b19e3779f9ull + right * 0xd6e8feb86659fd93ull +
++      down * 0xff51afd7ed558ccdull + aAbove[aI - 1] * 0xc4ceb9fe1a85ec53ull +
++      aAbove[aI + 1] * 0x87c37b91114253d5ull +
++      aBelow[aI - 1] * 0x4cf5ad432745937full +
++      aBelow[aI + 1] * 0x94d049bb133111ebull;
++  return int32_t(Mix(hash) >> 61);
 +}
 +
 +inline void SetBits(uint8_t* aPixel, const Layout& aLayout, int32_t aBits) {
@@ -131,42 +138,55 @@ new file mode 100644
 +  aPixel[aLayout.b] = (aPixel[aLayout.b] & 0xFE) | ((aBits >> 2) & 1);
 +}
 +
-+// Applies the noise to a whole image in place. Safe in place because a pixel's
-+// key ignores the bits that change.
-+inline void Apply(uint8_t* aData, ptrdiff_t aStride, int32_t aWidth,
-+                  int32_t aHeight, const Layout& aLayout) {
++// Applies the noise of the aWidth x aHeight rectangle at (aX, aY) of aSource
++// to aDest, a copy of that rectangle whose top-left pixel is at aDest and
++// whose rows are aDestStride bytes apart. Pixels outside the rectangle still
++// decide the keys at its edges. aDest may be aSource's own memory: a key
++// ignores the bits that change.
++inline void ApplyToCopy(const Image& aSource, int32_t aX, int32_t aY,
++                        uint8_t* aDest, ptrdiff_t aDestStride, int32_t aWidth,
++                        int32_t aHeight, const Layout& aDestLayout) {
 +  const uint64_t seed = Seed();
-+  if (!seed || !aData) {
++  if (!seed || !aDest || aWidth <= 0 || aHeight <= 0) {
 +    return;
 +  }
-+  const Image image{aData, aStride, aWidth, aHeight, aLayout};
-+  for (int32_t y = 0; y < aHeight; ++y) {
++  // The coarse values of three rows, one pixel wider on each side.
++  const size_t span = size_t(aWidth) + 2;
++  std::vector<uint32_t> rows(span * 3);
++  const auto row = [&](int32_t aRowY) {
++    return rows.data() + size_t((aRowY - aY + 1) % 3) * span;
++  };
++  const auto fill = [&](int32_t aRowY) {
++    uint32_t* out = row(aRowY);
++    for (size_t i = 0; i < span; ++i) {
++      out[i] = aSource.Coarse(aX - 1 + int32_t(i), aRowY);
++    }
++  };
++  fill(aY - 1);
++  fill(aY);
++  for (int32_t y = aY; y < aY + aHeight; ++y) {
++    fill(y + 1);
++    const uint32_t* above = row(y - 1);
++    const uint32_t* current = row(y);
++    const uint32_t* below = row(y + 1);
++    uint8_t* dest = aDest + (y - aY) * aDestStride;
 +    for (int32_t x = 0; x < aWidth; ++x) {
-+      const int32_t bits = Bits(image, x, y, seed);
++      if (!aSource.Opaque(aX + x, y)) {
++        continue;
++      }
++      const int32_t bits = Bits(above, current, below, size_t(x) + 1, seed);
 +      if (bits >= 0) {
-+        SetBits(aData + y * aStride + ptrdiff_t(x) * 4, aLayout, bits);
++        SetBits(dest + ptrdiff_t(x) * 4, aDestLayout, bits);
 +      }
 +    }
 +  }
 +}
 +
-+// Applies the noise to a copy of the rectangle at (aX, aY) of aSource, whose
-+// pixels outside the rectangle still decide the keys at its edges.
-+inline void ApplyToCopy(const Image& aSource, int32_t aX, int32_t aY,
-+                        uint8_t* aDest, ptrdiff_t aDestStride, int32_t aWidth,
-+                        int32_t aHeight, const Layout& aDestLayout) {
-+  const uint64_t seed = Seed();
-+  if (!seed || !aDest) {
-+    return;
-+  }
-+  for (int32_t y = 0; y < aHeight; ++y) {
-+    for (int32_t x = 0; x < aWidth; ++x) {
-+      const int32_t bits = Bits(aSource, aX + x, aY + y, seed);
-+      if (bits >= 0) {
-+        SetBits(aDest + y * aDestStride + ptrdiff_t(x) * 4, aDestLayout, bits);
-+      }
-+    }
-+  }
++// Applies the noise to a whole image in place.
++inline void Apply(uint8_t* aData, ptrdiff_t aStride, int32_t aWidth,
++                  int32_t aHeight, const Layout& aLayout) {
++  ApplyToCopy(Image{aData, aStride, aWidth, aHeight, aLayout}, 0, 0, aData,
++              aStride, aWidth, aHeight, aLayout);
 +}
 +
 +}  // namespace mozilla::readback_noise

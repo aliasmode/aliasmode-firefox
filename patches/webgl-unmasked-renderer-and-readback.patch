@@ -122,7 +122,7 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
          if (extraction == CanvasUtils::ImageExtraction::Randomize) {
            const auto pii = webgl::PackingInfoInfo::For(desc.pi);
            // DoReadPixels() requres pii to be Some().
-@@ -5728,6 +5768,52 @@
+@@ -5728,6 +5768,42 @@
    });
  }
  
@@ -145,7 +145,6 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
 +    return;
 +  }
 +  // GL rows run bottom-up; the image a page sees, and so the key, top-down.
-+  const int32_t height = int32_t(desc.size.y);
 +  const readback_noise::Image image{
 +      clean.get() + wideStride * (wide.size.y - 1), -ptrdiff_t(wideStride),
 +      int32_t(wide.size.x), int32_t(wide.size.y), readback_noise::kRGBA};
@@ -153,23 +152,14 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
 +  const size_t rowPixels = packing.rowLength ? packing.rowLength : desc.size.x;
 +  const size_t alignment = packing.alignmentInTypeElems;
 +  const size_t stride = (rowPixels * 4 + alignment - 1) / alignment * alignment;
-+  const uint64_t seed = readback_noise::Seed();
-+  for (int32_t row = 0; row < height; ++row) {
-+    for (int32_t col = 0; col < int32_t(desc.size.x); ++col) {
-+      const int32_t bits =
-+          readback_noise::Bits(image, col + 1, height - row, seed);
-+      if (bits < 0) {
-+        continue;
-+      }
-+      const size_t offset = (packing.skipRows + row) * stride +
-+                            (packing.skipPixels + col) * size_t(4);
-+      if (offset + 4 > dest.size()) {
-+        return;
-+      }
-+      readback_noise::SetBits(dest.data() + offset, readback_noise::kRGBA,
-+                              bits);
-+    }
++  const size_t top = (packing.skipRows + desc.size.y - 1) * stride +
++                     packing.skipPixels * size_t(4);
++  if (top + desc.size.x * size_t(4) > dest.size()) {
++    return;
 +  }
++  readback_noise::ApplyToCopy(image, 1, 1, dest.data() + top,
++                              -ptrdiff_t(stride), int32_t(desc.size.x),
++                              int32_t(desc.size.y), readback_noise::kRGBA);
 +}
 +
  bool ClientWebGLContext::DoReadPixels(const webgl::ReadPixelsDesc& desc,
