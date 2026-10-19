@@ -199,6 +199,8 @@ rules:
       was defaulted off in #779 and kept as an opt-in, but an opt-in whose
       only effect is to become detectable is not a feature, so the manager,
       the window setter, the shaper hook and the config key are gone.
+      AliasMode's opt-in for profiles that share a machine is
+      per-profile-noise below.
 
   - id: canvas-is-not-noised
     title: The canvas is rendered, not noised, and there is no canvas seed
@@ -216,6 +218,27 @@ rules:
       collisions with the device-level values and does not gate on them. The
       launchers generated a canvas:seed for three releases after the patch
       that read it was gone; it is not generated or declared any more.
+      AliasMode's opt-in for profiles that share a machine is
+      per-profile-noise below.
+
+  - id: per-profile-noise
+    title: Profiles on one machine can opt in to their own canvas, WebGL and text answers
+    check: manual
+    evidence:
+      - "156.0.1-beta.36 r4, three profiles on one machine with one graphics identity: getImageData, OffscreenCanvas, WebGL readPixels and every text width identical across profiles"
+      - "stock 156 keys only the encoded toDataURL/toBlob bytes per session (EfficientCanvasRandomization), never pixels or widths"
+    rationale: >-
+      Profiles that share a machine share its GPU, rasterizer and fonts, so the
+      values two rules above leave alone link them to each other.
+      aliasmode:canvasSeed and aliasmode:textSeed (absent or 0: stock) avoid
+      the tells of the removed features. The canvas and WebGL step depends on
+      the profile and the pixel's neighbourhood only, not on the call or the
+      position, so repeated reads, sub-rectangles, copies and all read paths
+      agree, a read written back reads back unchanged, and flat fills and
+      solid rectangles read back exactly. The text step is one app unit on a
+      fixed half of each font's glyphs, so widths keep stock quantization,
+      marks and pixel-snapped advances are untouched, and canvas, layout and
+      SVG measure the same text alike.
 
   - id: canvas-fingerprint-is-hashed-not-truncated
     title: The canvas check hashes pixels, not a prefix of the data URL

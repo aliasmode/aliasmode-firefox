@@ -1,0 +1,361 @@
+diff --git a/dom/base/ImageEncoder.cpp b/dom/base/ImageEncoder.cpp
+--- a/dom/base/ImageEncoder.cpp
++++ b/dom/base/ImageEncoder.cpp
+@@ -388,7 +388,8 @@
+       return NS_ERROR_INVALID_ARG;
+     }
+ 
+-    if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
++    if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize ||
++        OffscreenCanvasDisplayHelper::PerturbsReadback()) {
+       UniquePtr<uint8_t[]> imageBuffer = gfx::SurfaceToPackedBGRA(data);
+       if (!imageBuffer) {
+         return NS_ERROR_OUT_OF_MEMORY;
+diff --git a/dom/canvas/AliasModeReadbackNoise.h b/dom/canvas/AliasModeReadbackNoise.h
+new file mode 100644
+--- /dev/null
++++ b/dom/canvas/AliasModeReadbackNoise.h
+@@ -0,0 +1,156 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef DOM_CANVAS_ALIASMODEREADBACKNOISE_H_
++#define DOM_CANVAS_ALIASMODEREADBACKNOISE_H_
++
++#include <cstddef>
++#include <cstdint>
++
++#include "MaskConfig.hpp"
++
++// Per-profile readback noise for canvas and WebGL pixels (aliasmode:canvasSeed).
++//
++// Profiles on one machine share a GPU, a rasterizer and fonts, so without this
++// they read back identical pixels. With a seed, an eligible pixel reads back
++// with the lowest bit of red, green and blue replaced by bits drawn from the
++// seed and the pixel's 3x3 neighbourhood with those lowest bits dropped:
++//
++// - The answer depends on content only, never on position or on the call, so
++//   every read path, every sub-rectangle and every pixel-aligned copy of the
++//   same pixels agrees, and a profile reads the same bytes on every launch.
++// - Reading, writing back and reading again changes nothing: the step only
++//   touches the bits the key ignores.
++// - Only opaque pixels that differ from all four direct neighbours are
++//   eligible: anti-aliased edges and blends, where rasterizers differ between
++//   machines. Flat fills, rectangle edges, gradients along one axis and
++//   transparent pixels read back exactly as drawn.
++namespace mozilla::readback_noise {
++
++inline uint64_t Mix(uint64_t aValue) {
++  aValue ^= aValue >> 30;
++  aValue *= 0xbf58476d1ce4e5b9ull;
++  aValue ^= aValue >> 27;
++  aValue *= 0x94d049bb133111ebull;
++  return aValue ^ (aValue >> 31);
++}
++
++// The profile's seed; zero leaves every readback stock.
++inline uint64_t Seed() {
++  static const uint64_t seed = [] {
++    const uint64_t value =
++        MaskConfig::GetUint32("aliasmode:canvasSeed").value_or(0);
++    return value ? Mix(value ^ 0x9e3779b97f4a7c15ull) : 0;
++  }();
++  return seed;
++}
++
++// Byte offsets of the channels in a 4-byte pixel. A negative alpha offset
++// means the format has no alpha, and every pixel is opaque.
++struct Layout {
++  int8_t r, g, b, a;
++};
++inline constexpr Layout kBGRA{2, 1, 0, 3};
++inline constexpr Layout kBGRX{2, 1, 0, -1};
++inline constexpr Layout kRGBA{0, 1, 2, 3};
++
++// Pixels as the page sees them: `origin` is the top-left pixel and rows are
++// `stride` bytes apart (negative for the bottom-up rows of a GL readback).
++struct Image {
++  const uint8_t* origin;
++  ptrdiff_t stride;
++  int32_t width;
++  int32_t height;
++  Layout layout;
++
++  const uint8_t* At(int32_t aX, int32_t aY) const {
++    return origin + aY * stride + ptrdiff_t(aX) * 4;
++  }
++
++  bool Opaque(int32_t aX, int32_t aY) const {
++    return layout.a < 0 || At(aX, aY)[layout.a] == 0xFF;
++  }
++
++  // The pixel without its lowest bits; outside the image, transparent black.
++  uint32_t Coarse(int32_t aX, int32_t aY) const {
++    if (aX < 0 || aY < 0 || aX >= width || aY >= height) {
++      return 0;
++    }
++    const uint8_t* p = At(aX, aY);
++    const uint32_t alpha = layout.a < 0 ? 0xFF : p[layout.a];
++    return uint32_t(p[layout.r] >> 1) << 24 | uint32_t(p[layout.g] >> 1) << 16 |
++           uint32_t(p[layout.b] >> 1) << 8 | alpha >> 1;
++  }
++};
++
++// The lowest bits of red, green and blue (bits 0, 1, 2) the pixel at
++// (aX, aY) reads back with, or -1 when it reads back as drawn.
++inline int32_t Bits(const Image& aImage, int32_t aX, int32_t aY,
++                    uint64_t aSeed) {
++  if (!aImage.Opaque(aX, aY)) {
++    return -1;
++  }
++  const uint32_t centre = aImage.Coarse(aX, aY);
++  if (centre == aImage.Coarse(aX - 1, aY) ||
++      centre == aImage.Coarse(aX + 1, aY) ||
++      centre == aImage.Coarse(aX, aY - 1) ||
++      centre == aImage.Coarse(aX, aY + 1)) {
++    return -1;
++  }
++  uint64_t hash = aSeed;
++  for (int32_t dy = -1; dy <= 1; ++dy) {
++    for (int32_t dx = -1; dx <= 1; ++dx) {
++      hash = Mix(hash ^ aImage.Coarse(aX + dx, aY + dy));
++    }
++  }
++  return int32_t(hash >> 61);
++}
++
++inline void SetBits(uint8_t* aPixel, const Layout& aLayout, int32_t aBits) {
++  aPixel[aLayout.r] = (aPixel[aLayout.r] & 0xFE) | (aBits & 1);
++  aPixel[aLayout.g] = (aPixel[aLayout.g] & 0xFE) | ((aBits >> 1) & 1);
++  aPixel[aLayout.b] = (aPixel[aLayout.b] & 0xFE) | ((aBits >> 2) & 1);
++}
++
++// Applies the noise to a whole image in place. Safe in place because a pixel's
++// key ignores the bits that change.
++inline void Apply(uint8_t* aData, ptrdiff_t aStride, int32_t aWidth,
++                  int32_t aHeight, const Layout& aLayout) {
++  const uint64_t seed = Seed();
++  if (!seed || !aData) {
++    return;
++  }
++  const Image image{aData, aStride, aWidth, aHeight, aLayout};
++  for (int32_t y = 0; y < aHeight; ++y) {
++    for (int32_t x = 0; x < aWidth; ++x) {
++      const int32_t bits = Bits(image, x, y, seed);
++      if (bits >= 0) {
++        SetBits(aData + y * aStride + ptrdiff_t(x) * 4, aLayout, bits);
++      }
++    }
++  }
++}
++
++// Applies the noise to a copy of the rectangle at (aX, aY) of aSource, whose
++// pixels outside the rectangle still decide the keys at its edges.
++inline void ApplyToCopy(const Image& aSource, int32_t aX, int32_t aY,
++                        uint8_t* aDest, ptrdiff_t aDestStride, int32_t aWidth,
++                        int32_t aHeight, const Layout& aDestLayout) {
++  const uint64_t seed = Seed();
++  if (!seed || !aDest) {
++    return;
++  }
++  for (int32_t y = 0; y < aHeight; ++y) {
++    for (int32_t x = 0; x < aWidth; ++x) {
++      const int32_t bits = Bits(aSource, aX + x, aY + y, seed);
++      if (bits >= 0) {
++        SetBits(aDest + y * aDestStride + ptrdiff_t(x) * 4, aDestLayout, bits);
++      }
++    }
++  }
++}
++
++}  // namespace mozilla::readback_noise
++
++#endif  // DOM_CANVAS_ALIASMODEREADBACKNOISE_H_
+diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderingContext2D.cpp
+--- a/dom/canvas/CanvasRenderingContext2D.cpp
++++ b/dom/canvas/CanvasRenderingContext2D.cpp
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <numbers>
+ 
++#include "AliasModeReadbackNoise.h"
+ #include "CanvasImageCache.h"
+ #include "CanvasUtils.h"
+ #include "GeckoBindings.h"
+@@ -1348,6 +1349,7 @@
+   bool forceReset = true;
+   ReturnTarget(forceReset);
+   mTarget = nullptr;
++  mRasterized = false;
+   if (aFreeBuffer) {
+     mBufferProvider = nullptr;
+   } else if (mBufferProvider) {
+@@ -2289,6 +2291,11 @@
+         PrincipalOrNull(), ret.get(), out_imageSize->width,
+         out_imageSize->height,
+         out_imageSize->width * out_imageSize->height * 4);
++    if (mRasterized) {
++      readback_noise::Apply(ret.get(), out_imageSize->width * 4,
++                            out_imageSize->width, out_imageSize->height,
++                            readback_noise::kBGRA);
++    }
+     if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
+       nsRFPService::RandomizePixels(
+           GetCookieJarSettings(), PrincipalOrNull(), ret.get(),
+@@ -3421,6 +3428,14 @@
+     bounds = mTarget->GetTransform().TransformBounds(fillRect);
+   }
+ 
++  // A solid opaque colour on whole pixels comes out the same everywhere.
++  if (!discardContent || !isColor || needBounds ||
++      !mTarget->GetTransform().IsIntegerTranslation() ||
++      aX != std::floor(aX) || aY != std::floor(aY) ||
++      aW != std::floor(aW) || aH != std::floor(aH)) {
++    mRasterized = true;
++  }
++
+   AntialiasMode antialiasMode = CurrentState().imageSmoothingEnabled
+                                     ? AntialiasMode::DEFAULT
+                                     : AntialiasMode::NONE;
+@@ -3451,6 +3466,7 @@
+   if (!IsTargetValid()) {
+     return;
+   }
++  mRasterized = true;
+ 
+   const bool needBounds = NeedToCalculateBounds();
+   if (!IsTargetValid()) {
+@@ -3566,6 +3582,7 @@
+   target.Fill(&aPath,
+               CanvasGeneralPattern().ForStyle(this, Style::FILL, mTarget),
+               DrawOptions(CurrentState().globalAlpha, op));
++  mRasterized = true;
+   Redraw();
+ }
+ 
+@@ -3628,6 +3645,7 @@
+   target.Stroke(&aPath,
+                 CanvasGeneralPattern().ForStyle(this, Style::STROKE, mTarget),
+                 strokeOptions, DrawOptions(CurrentState().globalAlpha, op));
++  mRasterized = true;
+   Redraw();
+ }
+ 
+@@ -5406,6 +5424,7 @@
+   if (restoreTransform) {
+     mTarget->SetTransform(oldTransform);
+   }
++  mRasterized = true;
+ 
+   if (aOp == CanvasRenderingContext2D::TextDrawOperation::FILL &&
+       !doCalculateBounds) {
+@@ -6273,6 +6292,7 @@
+     DrawDirectlyToCanvas(drawInfo, &bounds, gfx::Rect(aDx, aDy, aDw, aDh),
+                          gfx::Rect(aSx, aSy, aSw, aSh), imgSize);
+   }
++  mRasterized = true;
+ 
+   RedrawUser(gfxRect(aDx, aDy, aDw, aDh));
+ }
+@@ -6803,6 +6823,16 @@
+                         aWidth * 4, SurfaceFormat::R8G8B8A8,
+                         dstWriteRect.Size());
+     }
++
++    if (mRasterized) {
++      const IntSize full = readback->GetSize();
++      const readback_noise::Image source{
++          rawData.mData, rawData.mStride, full.width, full.height,
++          mOpaque ? readback_noise::kBGRX : readback_noise::kBGRA};
++      readback_noise::ApplyToCopy(source, srcReadRect.x, srcReadRect.y, dst,
++                                  aWidth * 4, dstWriteRect.width,
++                                  dstWriteRect.height, readback_noise::kRGBA);
++    }
+   } while (false);
+ 
+   readback->Unmap();
+diff --git a/dom/canvas/CanvasRenderingContext2D.h b/dom/canvas/CanvasRenderingContext2D.h
+--- a/dom/canvas/CanvasRenderingContext2D.h
++++ b/dom/canvas/CanvasRenderingContext2D.h
+@@ -922,6 +922,11 @@
+   bool mIsContextLost = false;
+   // Whether or not we can restore the context after restoration.
+   bool mAllowContextRestore = true;
++  // Whether text, a path or an image has been drawn since the bitmap was last
++  // reset. Solid pixel-aligned rectangles and putImageData come out the same
++  // on every machine, so a canvas holding only those reads back as drawn
++  // (AliasModeReadbackNoise.h).
++  bool mRasterized = false;
+   // Which context properties apply to an SVG when calling drawImage.
+   CanvasContextProperties mContextProperties = CanvasContextProperties::None;
+ 
+diff --git a/dom/canvas/ImageBitmapRenderingContext.cpp b/dom/canvas/ImageBitmapRenderingContext.cpp
+--- a/dom/canvas/ImageBitmapRenderingContext.cpp
++++ b/dom/canvas/ImageBitmapRenderingContext.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "ImageBitmapRenderingContext.h"
+ 
++#include "AliasModeReadbackNoise.h"
++
+ #include "ImageContainer.h"
+ #include "gfx2DGlue.h"
+ #include "gfxPlatform.h"
+@@ -199,6 +201,9 @@
+         PrincipalOrNull(), ret.get(), data->GetSize().width,
+         data->GetSize().height,
+         data->GetSize().width * data->GetSize().height * 4);
++    readback_noise::Apply(ret.get(), data->GetSize().width * 4,
++                          data->GetSize().width, data->GetSize().height,
++                          readback_noise::kBGRA);
+     if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
+       nsRFPService::RandomizePixels(
+           GetCookieJarSettings(), PrincipalOrNull(), ret.get(),
+diff --git a/dom/canvas/OffscreenCanvasDisplayHelper.cpp b/dom/canvas/OffscreenCanvasDisplayHelper.cpp
+--- a/dom/canvas/OffscreenCanvasDisplayHelper.cpp
++++ b/dom/canvas/OffscreenCanvasDisplayHelper.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "OffscreenCanvasDisplayHelper.h"
+ 
++#include "AliasModeReadbackNoise.h"
++
+ #include "mozilla/SVGObserverUtils.h"
+ #include "mozilla/StaticPrefs_gfx.h"
+ #include "mozilla/dom/Document.h"
+@@ -599,6 +601,9 @@
+                                      aSize.height,
+                                      aSize.width * aSize.height * 4);
+ 
++  readback_noise::Apply(aData, aSize.width * 4, aSize.width, aSize.height,
++                        readback_noise::kBGRA);
++
+   if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
+     nsRFPService::RandomizePixels(
+         cookieJarSettings, principal, aData, aSize.width, aSize.height,
+@@ -606,6 +611,11 @@
+   }
+ }
+ 
++/* static */
++bool OffscreenCanvasDisplayHelper::PerturbsReadback() {
++  return readback_noise::Seed() != 0;
++}
++
+ UniquePtr<uint8_t[]> OffscreenCanvasDisplayHelper::GetImageBuffer(
+     CanvasUtils::ImageExtraction aExtractionBehavior, int32_t* aOutFormat,
+     gfx::IntSize* aOutImageSize) {
+diff --git a/dom/canvas/OffscreenCanvasDisplayHelper.h b/dom/canvas/OffscreenCanvasDisplayHelper.h
+--- a/dom/canvas/OffscreenCanvasDisplayHelper.h
++++ b/dom/canvas/OffscreenCanvasDisplayHelper.h
+@@ -78,6 +78,9 @@
+       gfx::IntSize* aOutImageSize);
+   void MaybeRandomizePixels(CanvasUtils::ImageExtraction aExtractionBehavior,
+                             uint8_t* aData, gfx::IntSize aSize);
++  // Whether MaybeRandomizePixels changes pixels even without randomization
++  // (AliasModeReadbackNoise.h), so encoding must go through it.
++  static bool PerturbsReadback();
+ 
+  private:
+   ~OffscreenCanvasDisplayHelper();

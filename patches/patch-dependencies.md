@@ -24,6 +24,7 @@ be listed there.
 |-------|-------------|
 | `audio-context-spoofing.patch` | `AudioContext:outputLatency` |
 | `audio-fingerprint-manager.patch` | `audio:seed` |
+| `canvas-readback-noise.patch` | `aliasmode:canvasSeed` (adds `dom/canvas/AliasModeReadbackNoise.h`) |
 | `chromeutil.patch` | `debug` |
 | `fingerprint-injection.patch` | `navigator.*`, `screen.*`, `window.*` |
 | `font-hijacker.patch` | `navigator.platform` |
@@ -32,6 +33,7 @@ be listed there.
 | `force-default-pointer.patch` | `navigator.maxTouchPoints` |
 | `geolocation-spoofing.patch` | `geolocation:*` |
 | `global-style-sheets.patch` | `disableTheming` |
+| `glyph-advance-noise.patch` | `aliasmode:textSeed` |
 | `locale-spoofing.patch` | `locale:*`, `navigator.language` |
 | `media-codec-spoofing.patch` | `media:spoof_codecs` (bypasses `PDMFactory::Supports()` in `MP4Decoder`/`MatroskaDecoder` so `canPlayType()`/`isTypeSupported()` don't leak system codec libraries) |
 | `media-device-spoofing.patch` | `mediaDevices:*` |
@@ -44,6 +46,7 @@ be listed there.
 | `touchscreen-fingerprint-spoofing.patch` | `navigator.maxTouchPoints` |
 | `voice-spoofing.patch` | `voices:*` |
 | `webgl-spoofing.patch` | `webGl:*` |
+| `webgl-unmasked-renderer-and-readback.patch` | `webGl:renderer`, `aliasmode:canvasSeed` (applies after `webgl-spoofing.patch`; needs `canvas-readback-noise.patch`) |
 | `webrtc-ip-spoofing.patch` | `webrtc:ipv4`, `webrtc:ipv6`, `navigator.platform` |
 
 To regenerate the list: `grep -l 'MaskConfig::' patches/*.patch`.
