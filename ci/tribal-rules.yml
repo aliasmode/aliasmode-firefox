@@ -236,9 +236,10 @@ rules:
       position, so repeated reads, sub-rectangles, copies and all read paths
       agree, a read written back reads back unchanged, and flat fills and
       solid rectangles read back exactly. The text step is one app unit on a
-      fixed half of each font's glyphs, so widths keep stock quantization,
-      marks and pixel-snapped advances are untouched, and canvas, layout and
-      SVG measure the same text alike.
+      fixed half of each font's advance widths, so widths keep stock
+      quantization, glyphs of one width keep one width, marks and
+      pixel-snapped advances are untouched, and canvas, layout and SVG measure
+      the same text alike.
 
   - id: canvas-fingerprint-is-hashed-not-truncated
     title: The canvas check hashes pixels, not a prefix of the data URL

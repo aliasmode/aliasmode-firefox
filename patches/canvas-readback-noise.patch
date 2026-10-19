@@ -15,7 +15,7 @@ diff --git a/dom/canvas/AliasModeReadbackNoise.h b/dom/canvas/AliasModeReadbackN
 new file mode 100644
 --- /dev/null
 +++ b/dom/canvas/AliasModeReadbackNoise.h
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,192 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -41,11 +41,12 @@ new file mode 100644
 +//   same pixels agrees, and a profile reads the same bytes on every launch.
 +// - Reading, writing back and reading again changes nothing: the step only
 +//   touches the bits the key ignores.
-+// - Only opaque pixels that differ from all four direct neighbours, away from
-+//   the image's edge and from cleared pixels, are eligible: anti-aliased
-+//   edges and blends, where rasterizers differ between machines. Flat fills,
-+//   rectangle edges, gradients along one axis, transparent pixels and tiny
-+//   probe canvases read back exactly as drawn.
++// - Only opaque pixels away from the image's edge and from cleared pixels,
++//   that differ from all four direct neighbours or sit among three or more
++//   values, are eligible: anti-aliased edges, blends and gradients, where
++//   rasterizers and GPUs differ between machines. Flat fills, the edges and
++//   corners of flat shapes, transparent pixels and tiny probe canvases read
++//   back exactly as drawn.
 +namespace mozilla::readback_noise {
 +
 +inline uint64_t Mix(uint64_t aValue) {
@@ -108,27 +109,42 @@ new file mode 100644
 +// at column aI of aRow, between aAbove and aBelow, or -1 to keep it as drawn.
 +inline int32_t Bits(const uint32_t* aAbove, const uint32_t* aRow,
 +                    const uint32_t* aBelow, size_t aI, uint64_t aSeed) {
-+  const uint32_t centre = aRow[aI];
-+  const uint32_t up = aAbove[aI];
-+  const uint32_t left = aRow[aI - 1];
-+  const uint32_t right = aRow[aI + 1];
-+  const uint32_t down = aBelow[aI];
-+  if (centre == up || centre == left || centre == right || centre == down) {
-+    return -1;
-+  }
++  const uint32_t around[9] = {aAbove[aI - 1], aAbove[aI], aAbove[aI + 1],
++                              aRow[aI - 1],   aRow[aI],   aRow[aI + 1],
++                              aBelow[aI - 1], aBelow[aI], aBelow[aI + 1]};
 +  // Next to the edge of the image or to a cleared pixel: the pixels of a tiny
 +  // probe canvas, which are known per engine, stay exact.
-+  if (!up || !left || !right || !down || !aAbove[aI - 1] ||
-+      !aAbove[aI + 1] || !aBelow[aI - 1] || !aBelow[aI + 1]) {
++  for (const uint32_t value : around) {
++    if (!value) {
++      return -1;
++    }
++  }
++  // A pixel unlike its four neighbours, or among three or more values: an
++  // anti-aliased edge, a blend or a gradient. Edges and corners of flat
++  // shapes hold two values and stay exact.
++  const uint32_t centre = around[4];
++  bool varied = centre != around[1] && centre != around[3] &&
++                centre != around[5] && centre != around[7];
++  uint32_t other = centre;
++  for (size_t i = 0; i < 9 && !varied; ++i) {
++    if (around[i] == centre || around[i] == other) {
++      continue;
++    }
++    if (other == centre) {
++      other = around[i];
++    } else {
++      varied = true;
++    }
++  }
++  if (!varied) {
 +    return -1;
 +  }
 +  const uint64_t hash =
-+      aSeed + centre * 0x9e3779b97f4a7c15ull + up * 0xc2b2ae3d27d4eb4full +
-+      left * 0x165667b19e3779f9ull + right * 0xd6e8feb86659fd93ull +
-+      down * 0xff51afd7ed558ccdull + aAbove[aI - 1] * 0xc4ceb9fe1a85ec53ull +
-+      aAbove[aI + 1] * 0x87c37b91114253d5ull +
-+      aBelow[aI - 1] * 0x4cf5ad432745937full +
-+      aBelow[aI + 1] * 0x94d049bb133111ebull;
++      aSeed + around[0] * 0xc4ceb9fe1a85ec53ull +
++      around[1] * 0xc2b2ae3d27d4eb4full + around[2] * 0x87c37b91114253d5ull +
++      around[3] * 0x165667b19e3779f9ull + around[4] * 0x9e3779b97f4a7c15ull +
++      around[5] * 0xd6e8feb86659fd93ull + around[6] * 0x4cf5ad432745937full +
++      around[7] * 0xff51afd7ed558ccdull + around[8] * 0x94d049bb133111ebull;
 +  return int32_t(Mix(hash) >> 61);
 +}
 +

@@ -34,40 +34,39 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.cpp b/gfx/thebes/gfxHarfBuzzShaper.cpp
         // will fit without requiring separate allocation
         // for charToGlyphArray
  
-+int32_t gfxHarfBuzzShaper::AdvanceNoise(uint32_t aGlyph,
-+                                        hb_position_t aAdvance) const {
-+  return mAdvanceSalt && aAdvance > 0
-+             ? int32_t(mozilla::HashGeneric(mAdvanceSalt, aGlyph) >> 31)
-+             : 0;
++int32_t gfxHarfBuzzShaper::AdvanceNoise(hb_position_t aAdvance) const {
++  if (!mAdvanceSalt || aAdvance <= 0) {
++    return 0;
++  }
++  return int32_t(mozilla::HashGeneric(mAdvanceSalt, uint32_t(aAdvance)) >> 31);
 +}
 +
  nsresult gfxHarfBuzzShaper::SetGlyphsFromRun(gfxShapedText* aShapedText,
                                               uint32_t aOffset, uint32_t aLength,
                                               const char16_t* aText,
-@@ -1699,7 +1721,8 @@
+@@ -1699,7 +1721,7 @@
        advance = appUnitsPerDevUnit * intWidth + iOffset;
      } else {
        iOffset = floor(hb2appUnits * i_offset + 0.5);
 -      advance = floor(hb2appUnits * i_advance + 0.5);
-+      advance = floor(hb2appUnits * i_advance + 0.5) +
-+                AdvanceNoise(ginfo[glyphStart].codepoint, i_advance);
++      advance = floor(hb2appUnits * i_advance + 0.5) + AdvanceNoise(i_advance);
      }
      // Check if it's a simple one-to-one mapping
      if (glyphsInClump == 1 &&
-@@ -1765,7 +1788,8 @@
+@@ -1765,7 +1787,8 @@
            advance = appUnitsPerDevUnit * intAdvance;
          } else {
            iOffset = floor(hb2appUnits * i_offset + 0.5);
 -          advance = floor(hb2appUnits * i_advance + 0.5);
 +          advance = floor(hb2appUnits * i_advance + 0.5) +
-+                    AdvanceNoise(ginfo[glyphStart].codepoint, i_advance);
++                    AdvanceNoise(i_advance);
          }
        }
  
 diff --git a/gfx/thebes/gfxHarfBuzzShaper.h b/gfx/thebes/gfxHarfBuzzShaper.h
 --- a/gfx/thebes/gfxHarfBuzzShaper.h
 +++ b/gfx/thebes/gfxHarfBuzzShaper.h
-@@ -277,6 +277,14 @@
+@@ -277,6 +277,16 @@
    // when available (only set if the 'vert' feature is not available).
    bool mUseVerticalPresentationForms = false;
  
@@ -75,9 +74,11 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.h b/gfx/thebes/gfxHarfBuzzShaper.h
 +  // them stock.
 +  uint32_t mAdvanceSalt = 0;
 +
-+  // One extra app unit on about half the glyphs of the font, chosen by glyph
-+  // id, for advancing glyphs that are not snapped to whole pixels.
-+  int32_t AdvanceNoise(uint32_t aGlyph, hb_position_t aAdvance) const;
++  // One extra app unit on about half the advance widths of the font, for
++  // advancing glyphs that are not snapped to whole pixels. Keyed by the width
++  // itself, so glyphs of one width (every glyph of a monospaced font, tabular
++  // digits) keep one width.
++  int32_t AdvanceNoise(hb_position_t aAdvance) const;
 +
    // these are set from the FindGlyf callback on first use of the glyf data
    mutable bool mLoadedLocaGlyf = false;
