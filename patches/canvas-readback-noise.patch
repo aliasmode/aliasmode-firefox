@@ -15,7 +15,7 @@ diff --git a/dom/canvas/AliasModeReadbackNoise.h b/dom/canvas/AliasModeReadbackN
 new file mode 100644
 --- /dev/null
 +++ b/dom/canvas/AliasModeReadbackNoise.h
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,232 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32,21 +32,23 @@ new file mode 100644
 +// Per-profile readback noise for canvas and WebGL pixels (aliasmode:canvasSeed).
 +//
 +// Profiles on one machine share a GPU, a rasterizer and fonts, so without this
-+// they read back identical pixels. With a seed, an eligible pixel reads back
-+// with the lowest bit of red, green and blue replaced by bits drawn from the
-+// seed and the pixel's 3x3 neighbourhood with those lowest bits dropped:
++// they read back identical pixels. With a seed, each colour channel of an
++// eligible pixel falls in a band of four values whose position is the
++// profile's own, and reads back as the band member drawn from the seed and
++// the pixel's 3x3 neighbourhood of bands:
 +//
 +// - The answer depends on content only, never on position or on the call, so
 +//   every read path, every sub-rectangle and every pixel-aligned copy of the
 +//   same pixels agrees, and a profile reads the same bytes on every launch.
-+// - Reading, writing back and reading again changes nothing: the step only
-+//   touches the bits the key ignores.
-+// - Only opaque pixels away from the image's edge and from cleared pixels,
-+//   that differ from all four direct neighbours or sit among three or more
-+//   values, are eligible: anti-aliased edges, blends and gradients, where
-+//   rasterizers and GPUs differ between machines. Flat fills, the edges and
-+//   corners of flat shapes, transparent pixels and tiny probe canvases read
-+//   back exactly as drawn.
++// - Reading, writing back and reading again changes nothing: a value never
++//   leaves its band, and the bands are the key.
++// - A channel moves by at most 3, but no fixed rounding of the values hides
++//   the move: the bands straddle the boundaries of every power-of-two bucket.
++// - Only pixels at least half opaque that differ from all four direct
++//   neighbours, or sit among three or more values, are eligible: anti-aliased
++//   edges, lines, blends and gradients, where rasterizers and GPUs differ
++//   between machines. Flat fills, the edges and corners of flat shapes,
++//   cleared pixels and images under 16 pixels on a side read back as drawn.
 +namespace mozilla::readback_noise {
 +
 +inline uint64_t Mix(uint64_t aValue) {
@@ -67,6 +69,25 @@ new file mode 100644
 +  return seed;
 +}
 +
++// Where the profile's bands of red, green and blue start: 1, 2 or 3 past a
++// multiple of four, never 0, so no band lines up with a power-of-two bucket.
++inline uint32_t BandOffset(int aChannel) {
++  return 1 + uint32_t((Seed() >> (8 * aChannel)) % 3);
++}
++
++// The band of a channel value: 0 for the values below the first band start.
++inline uint32_t Band(uint32_t aValue, uint32_t aOffset) {
++  return (aValue + 4 - aOffset) >> 2;
++}
++
++// Images smaller than this on either side read back as drawn: tiny probe
++// canvases hold values known per engine.
++inline constexpr int32_t kMinSide = 16;
++
++inline bool Exempt(int32_t aWidth, int32_t aHeight) {
++  return aWidth < kMinSide || aHeight < kMinSide;
++}
++
 +// Byte offsets of the channels in a 4-byte pixel. A negative alpha offset
 +// means the format has no alpha, and every pixel is opaque.
 +struct Layout {
@@ -76,6 +97,10 @@ new file mode 100644
 +inline constexpr Layout kBGRX{2, 1, 0, -1};
 +inline constexpr Layout kRGBA{0, 1, 2, 3};
 +
++inline uint32_t Alpha(const uint8_t* aPixel, const Layout& aLayout) {
++  return aLayout.a < 0 ? 0xFF : aPixel[aLayout.a];
++}
++
 +// Pixels as the page sees them: `origin` is the top-left pixel and rows are
 +// `stride` bytes apart (negative for the bottom-up rows of a GL readback).
 +struct Image {
@@ -84,45 +109,39 @@ new file mode 100644
 +  int32_t width;
 +  int32_t height;
 +  Layout layout;
++  uint32_t offsets[3] = {BandOffset(0), BandOffset(1), BandOffset(2)};
 +
 +  const uint8_t* At(int32_t aX, int32_t aY) const {
 +    return origin + aY * stride + ptrdiff_t(aX) * 4;
 +  }
 +
-+  bool Opaque(int32_t aX, int32_t aY) const {
-+    return layout.a < 0 || At(aX, aY)[layout.a] == 0xFF;
-+  }
-+
-+  // The pixel without its lowest bits; outside the image, transparent black.
++  // The bands of the pixel and its alpha; outside the image, the value of a
++  // cleared pixel.
 +  uint32_t Coarse(int32_t aX, int32_t aY) const {
 +    if (aX < 0 || aY < 0 || aX >= width || aY >= height) {
 +      return 0;
 +    }
 +    const uint8_t* p = At(aX, aY);
-+    const uint32_t alpha = layout.a < 0 ? 0xFF : p[layout.a];
-+    return uint32_t(p[layout.r] >> 1) << 24 | uint32_t(p[layout.g] >> 1) << 16 |
-+           uint32_t(p[layout.b] >> 1) << 8 | alpha >> 1;
++    return Band(p[layout.r], offsets[0]) << 24 |
++           Band(p[layout.g], offsets[1]) << 16 |
++           Band(p[layout.b], offsets[2]) << 8 | Alpha(p, layout);
 +  }
 +};
 +
-+// The lowest bits of red, green and blue (bits 0, 1, 2) for the opaque pixel
-+// at column aI of aRow, between aAbove and aBelow, or -1 to keep it as drawn.
++// Two bits each for red, green and blue (bits 0-1, 2-3, 4-5) for the pixel at
++// column aI of aRow, between aAbove and aBelow, or -1 to keep it as drawn.
 +inline int32_t Bits(const uint32_t* aAbove, const uint32_t* aRow,
 +                    const uint32_t* aBelow, size_t aI, uint64_t aSeed) {
 +  const uint32_t around[9] = {aAbove[aI - 1], aAbove[aI], aAbove[aI + 1],
 +                              aRow[aI - 1],   aRow[aI],   aRow[aI + 1],
 +                              aBelow[aI - 1], aBelow[aI], aBelow[aI + 1]};
-+  // Next to the edge of the image or to a cleared pixel: the pixels of a tiny
-+  // probe canvas, which are known per engine, stay exact.
-+  for (const uint32_t value : around) {
-+    if (!value) {
-+      return -1;
-+    }
++  const uint32_t centre = around[4];
++  if ((centre & 0xFF) < 0x80) {
++    return -1;
 +  }
 +  // A pixel unlike its four neighbours, or among three or more values: an
-+  // anti-aliased edge, a blend or a gradient. Edges and corners of flat
-+  // shapes hold two values and stay exact.
-+  const uint32_t centre = around[4];
++  // anti-aliased edge, a line, a blend or a gradient. Edges and corners of
++  // flat shapes hold two values and stay exact.
 +  bool varied = centre != around[1] && centre != around[3] &&
 +                centre != around[5] && centre != around[7];
 +  uint32_t other = centre;
@@ -145,23 +164,43 @@ new file mode 100644
 +      around[3] * 0x165667b19e3779f9ull + around[4] * 0x9e3779b97f4a7c15ull +
 +      around[5] * 0xd6e8feb86659fd93ull + around[6] * 0x4cf5ad432745937full +
 +      around[7] * 0xff51afd7ed558ccdull + around[8] * 0x94d049bb133111ebull;
-+  return int32_t(Mix(hash) >> 61);
++  return int32_t(Mix(hash) >> 58);
 +}
 +
-+inline void SetBits(uint8_t* aPixel, const Layout& aLayout, int32_t aBits) {
-+  aPixel[aLayout.r] = (aPixel[aLayout.r] & 0xFE) | (aBits & 1);
-+  aPixel[aLayout.g] = (aPixel[aLayout.g] & 0xFE) | ((aBits >> 1) & 1);
-+  aPixel[aLayout.b] = (aPixel[aLayout.b] & 0xFE) | ((aBits >> 2) & 1);
++// Moves one channel to the member of its band that aPick (0-3) selects. A
++// premultiplied colour never exceeds its alpha; one that already does is kept.
++inline uint8_t Step(uint32_t aValue, uint32_t aOffset, uint32_t aPick,
++                    uint32_t aCap) {
++  if (aValue > aCap) {
++    return uint8_t(aValue);
++  }
++  const int32_t start =
++      int32_t(Band(aValue, aOffset)) * 4 - 4 + int32_t(aOffset);
++  const int32_t low = start < 0 ? 0 : start;
++  const int32_t high = start + 3 > int32_t(aCap) ? int32_t(aCap) : start + 3;
++  return uint8_t(low + int32_t(aPick % uint32_t(high - low + 1)));
++}
++
++inline void SetBits(uint8_t* aPixel, const Layout& aLayout,
++                    const uint32_t* aOffsets, int32_t aBits,
++                    bool aPremultiplied) {
++  const uint32_t cap = aPremultiplied ? Alpha(aPixel, aLayout) : 0xFF;
++  const int8_t channels[3] = {aLayout.r, aLayout.g, aLayout.b};
++  for (int c = 0; c < 3; ++c) {
++    uint8_t& value = aPixel[channels[c]];
++    value = Step(value, aOffsets[c], uint32_t(aBits >> (2 * c)) & 3, cap);
++  }
 +}
 +
 +// Applies the noise of the aWidth x aHeight rectangle at (aX, aY) of aSource
 +// to aDest, a copy of that rectangle whose top-left pixel is at aDest and
 +// whose rows are aDestStride bytes apart. Pixels outside the rectangle still
 +// decide the keys at its edges. aDest may be aSource's own memory: a key
-+// ignores the bits that change.
++// ignores the values a step can reach.
 +inline void ApplyToCopy(const Image& aSource, int32_t aX, int32_t aY,
 +                        uint8_t* aDest, ptrdiff_t aDestStride, int32_t aWidth,
-+                        int32_t aHeight, const Layout& aDestLayout) {
++                        int32_t aHeight, const Layout& aDestLayout,
++                        bool aPremultiplied) {
 +  const uint64_t seed = Seed();
 +  if (!seed || !aDest || aWidth <= 0 || aHeight <= 0) {
 +    return;
@@ -187,12 +226,10 @@ new file mode 100644
 +    const uint32_t* below = row(y + 1);
 +    uint8_t* dest = aDest + (y - aY) * aDestStride;
 +    for (int32_t x = 0; x < aWidth; ++x) {
-+      if (!aSource.Opaque(aX + x, y)) {
-+        continue;
-+      }
 +      const int32_t bits = Bits(above, current, below, size_t(x) + 1, seed);
 +      if (bits >= 0) {
-+        SetBits(dest + ptrdiff_t(x) * 4, aDestLayout, bits);
++        SetBits(dest + ptrdiff_t(x) * 4, aDestLayout, aSource.offsets, bits,
++                aPremultiplied);
 +      }
 +    }
 +  }
@@ -200,9 +237,12 @@ new file mode 100644
 +
 +// Applies the noise to a whole image in place.
 +inline void Apply(uint8_t* aData, ptrdiff_t aStride, int32_t aWidth,
-+                  int32_t aHeight, const Layout& aLayout) {
++                  int32_t aHeight, const Layout& aLayout, bool aPremultiplied) {
++  if (Exempt(aWidth, aHeight)) {
++    return;
++  }
 +  ApplyToCopy(Image{aData, aStride, aWidth, aHeight, aLayout}, 0, 0, aData,
-+              aStride, aWidth, aHeight, aLayout);
++              aStride, aWidth, aHeight, aLayout, aPremultiplied);
 +}
 +
 +}  // namespace mozilla::readback_noise
@@ -234,7 +274,7 @@ diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderin
 +    if (mRasterized) {
 +      readback_noise::Apply(ret.get(), out_imageSize->width * 4,
 +                            out_imageSize->width, out_imageSize->height,
-+                            readback_noise::kBGRA);
++                            readback_noise::kBGRA, true);
 +    }
      if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
        nsRFPService::RandomizePixels(
@@ -294,23 +334,34 @@ diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderin
  
    RedrawUser(gfxRect(aDx, aDy, aDw, aDh));
  }
-@@ -6803,6 +6823,16 @@
-                         aWidth * 4, SurfaceFormat::R8G8B8A8,
-                         dstWriteRect.Size());
-     }
-+
-+    if (mRasterized) {
-+      const IntSize full = readback->GetSize();
-+      const readback_noise::Image source{
-+          rawData.mData, rawData.mStride, full.width, full.height,
-+          mOpaque ? readback_noise::kBGRX : readback_noise::kBGRA};
-+      readback_noise::ApplyToCopy(source, srcReadRect.x, srcReadRect.y, dst,
-+                                  aWidth * 4, dstWriteRect.width,
-+                                  dstWriteRect.height, readback_noise::kRGBA);
-+    }
-   } while (false);
+@@ -6793,6 +6813,27 @@
+     uint8_t* src =
+         rawData.mData + srcReadRect.y * srcStride + srcReadRect.x * 4;
  
-   readback->Unmap();
++    // The noise is applied to the pixels the canvas holds, and the stock
++    // conversion below then makes them what a page reads, as an encoder does.
++    std::vector<uint8_t> noisy;
++    if (mRasterized && readback_noise::Seed() &&
++        !readback_noise::Exempt(size.width, size.height)) {
++      const size_t rowBytes = size_t(srcReadRect.width) * 4;
++      noisy.resize(rowBytes * srcReadRect.height);
++      for (int32_t row = 0; row < srcReadRect.height; ++row) {
++        memcpy(noisy.data() + row * rowBytes, src + row * srcStride, rowBytes);
++      }
++      const readback_noise::Layout layout =
++          mOpaque ? readback_noise::kBGRX : readback_noise::kBGRA;
++      readback_noise::ApplyToCopy(
++          readback_noise::Image{rawData.mData, rawData.mStride, size.width,
++                                size.height, layout},
++          srcReadRect.x, srcReadRect.y, noisy.data(), ptrdiff_t(rowBytes),
++          srcReadRect.width, srcReadRect.height, layout, true);
++      src = noisy.data();
++      srcStride = uint32_t(rowBytes);
++    }
++
+     uint8_t* dst = data + dstWriteRect.y * (aWidth * 4) + dstWriteRect.x * 4;
+ 
+     if (mOpaque) {
 diff --git a/dom/canvas/CanvasRenderingContext2D.h b/dom/canvas/CanvasRenderingContext2D.h
 --- a/dom/canvas/CanvasRenderingContext2D.h
 +++ b/dom/canvas/CanvasRenderingContext2D.h
@@ -344,7 +395,7 @@ diff --git a/dom/canvas/ImageBitmapRenderingContext.cpp b/dom/canvas/ImageBitmap
          data->GetSize().width * data->GetSize().height * 4);
 +    readback_noise::Apply(ret.get(), data->GetSize().width * 4,
 +                          data->GetSize().width, data->GetSize().height,
-+                          readback_noise::kBGRA);
++                          readback_noise::kBGRA, true);
      if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
        nsRFPService::RandomizePixels(
            GetCookieJarSettings(), PrincipalOrNull(), ret.get(),
@@ -365,7 +416,7 @@ diff --git a/dom/canvas/OffscreenCanvasDisplayHelper.cpp b/dom/canvas/OffscreenC
                                       aSize.width * aSize.height * 4);
  
 +  readback_noise::Apply(aData, aSize.width * 4, aSize.width, aSize.height,
-+                        readback_noise::kBGRA);
++                        readback_noise::kBGRA, true);
 +
    if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
      nsRFPService::RandomizePixels(

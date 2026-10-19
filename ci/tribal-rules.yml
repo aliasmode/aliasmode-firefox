@@ -227,6 +227,7 @@ rules:
     evidence:
       - "156.0.1-beta.36 r4, three profiles on one machine with one graphics identity: getImageData, OffscreenCanvas, WebGL readPixels and every text width identical across profiles"
       - "stock 156 keys only the encoded toDataURL/toBlob bytes per session (EfficientCanvasRandomization), never pixels or widths"
+      - "r5 kept the step to the lowest bit, so a hash of WebGL pixels rounded to 16 was still identical across five profiles"
     rationale: >-
       Profiles that share a machine share its GPU, rasterizer and fonts, so the
       values two rules above leave alone link them to each other.
@@ -234,9 +235,11 @@ rules:
       the tells of the removed features. The canvas and WebGL step depends on
       the profile and the pixel's neighbourhood only, not on the call or the
       position, so repeated reads, sub-rectangles, copies and all read paths
-      agree, a read written back reads back unchanged, and flat fills and
-      solid rectangles read back exactly. The text step is one app unit on a
-      fixed half of each font's advance widths, so widths keep stock
+      agree, a read written back reads back unchanged, and flat fills, the
+      edges of flat shapes and tiny probe canvases read back exactly. A value
+      moves inside a band of four whose position is the profile's own, so no
+      fixed rounding of the values hides the step. The text step is one app
+      unit on a fixed half of each font's advance widths, so widths keep stock
       quantization, glyphs of one width keep one width, marks and
       pixel-snapped advances are untouched, and canvas, layout and SVG measure
       the same text alike.

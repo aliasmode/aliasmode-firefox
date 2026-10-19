@@ -17,14 +17,14 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
  #include "mozilla/gfx/Swizzle.h"
  #include "mozilla/gfx/gfxVars.h"
  #include "mozilla/ipc/Shmem.h"
-@@ -1396,6 +1398,28 @@
+@@ -1396,6 +1398,29 @@
    return DoReadPixelsAsync();
  }
  
 +// A copy of a snapshot with the profile's readback noise
 +// (AliasModeReadbackNoise.h), leaving the snapshot itself as drawn.
 +static RefPtr<gfx::DataSourceSurface> WithReadbackNoise(
-+    gfx::DataSourceSurface* aSurface) {
++    gfx::DataSourceSurface* aSurface, bool aPremultiplied) {
 +  RefPtr<gfx::DataSourceSurface> copy =
 +      gfx::CreateDataSourceSurfaceByCloning(aSurface);
 +  if (!copy) {
@@ -39,34 +39,38 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
 +                        copy->GetSize().height,
 +                        copy->GetFormat() == gfx::SurfaceFormat::B8G8R8X8
 +                            ? readback_noise::kBGRX
-+                            : readback_noise::kBGRA);
++                            : readback_noise::kBGRA,
++                        aPremultiplied);
 +  return copy;
 +}
 +
  UniquePtr<uint8_t[]> ClientWebGLContext::GetImageBuffer(
      mozilla::CanvasUtils::ImageExtraction aExtractionBehavior,
      int32_t* out_format, gfx::IntSize* out_imageSize) {
-@@ -1413,6 +1437,9 @@
+@@ -1413,8 +1438,11 @@
    if (!snapshot) return nullptr;
  
    RefPtr<gfx::DataSourceSurface> dataSurface = snapshot->GetDataSurface();
-+  if (mRasterized && readback_noise::Seed()) {
-+    dataSurface = WithReadbackNoise(dataSurface);
-+  }
- 
+-
    const auto& premultAlpha = notLost->info.options.premultipliedAlpha;
++  if (mRasterized && readback_noise::Seed()) {
++    dataSurface = WithReadbackNoise(dataSurface, premultAlpha);
++  }
++
    *out_imageSize = dataSurface->GetSize();
-@@ -1443,6 +1470,9 @@
-   if (!snapshot) return NS_ERROR_FAILURE;
- 
-   RefPtr<gfx::DataSourceSurface> dataSurface = snapshot->GetDataSurface();
-+  if (mRasterized && readback_noise::Seed()) {
-+    dataSurface = WithReadbackNoise(dataSurface);
-+  }
-   const auto& premultAlpha = notLost->info.options.premultipliedAlpha;
  
    nsRFPService::PotentiallyDumpImage(PrincipalOrNull(), dataSurface);
-@@ -2650,6 +2680,19 @@
+@@ -1444,6 +1472,9 @@
+ 
+   RefPtr<gfx::DataSourceSurface> dataSurface = snapshot->GetDataSurface();
+   const auto& premultAlpha = notLost->info.options.premultipliedAlpha;
++  if (mRasterized && readback_noise::Seed()) {
++    dataSurface = WithReadbackNoise(dataSurface, premultAlpha);
++  }
+ 
+   nsRFPService::PotentiallyDumpImage(PrincipalOrNull(), dataSurface);
+   if (extractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
+@@ -2650,6 +2681,19 @@
        return GetString(LOCAL_GL_RENDERER);
      };
  
@@ -86,7 +90,7 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
      const auto GetUnmaskedVendor = [&]() {
        const auto prefLock = StaticPrefs::webgl_override_unmasked_vendor();
        if (!prefLock->IsEmpty()) {
-@@ -2674,6 +2717,9 @@
+@@ -2674,6 +2718,9 @@
            allowRenderer = false;
          }
          if (allowRenderer) {
@@ -96,7 +100,7 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
            ret = GetUnmaskedRenderer();
            if (ret) {
              ret = Some(webgl::SanitizeRenderer(*ret));
-@@ -2710,15 +2756,8 @@
+@@ -2710,15 +2757,8 @@
  
          switch (pname) {
            case dom::WEBGL_debug_renderer_info_Binding::UNMASKED_RENDERER_WEBGL:
@@ -114,7 +118,7 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
                break;
              }
              if (ShouldResistFingerprinting(RFPTarget::WebGLRenderInfo) ||
-@@ -5702,6 +5741,7 @@
+@@ -5702,6 +5742,7 @@
        } else {
          RecordCanvasUsage(CanvasExtractionAPI::ReadPixels,
                            CSSIntSize(width, height));
@@ -122,7 +126,7 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
          if (extraction == CanvasUtils::ImageExtraction::Randomize) {
            const auto pii = webgl::PackingInfoInfo::For(desc.pi);
            // DoReadPixels() requres pii to be Some().
-@@ -5728,6 +5768,42 @@
+@@ -5728,6 +5769,55 @@
    });
  }
  
@@ -132,6 +136,18 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
 +      desc.pi.format != LOCAL_GL_RGBA ||
 +      desc.pi.type != LOCAL_GL_UNSIGNED_BYTE || !desc.size.x || !desc.size.y) {
 +    return;
++  }
++  RefPtr<webgl::NotLostData> notLost(mNotLost);
++  if (!notLost) {
++    return;
++  }
++  if (!State().mBoundReadFb) {
++    // DrawingBufferSize() only caches the size it asks the host for.
++    const auto size =
++        const_cast<ClientWebGLContext*>(this)->DrawingBufferSize();
++    if (readback_noise::Exempt(int32_t(size.x), int32_t(size.y))) {
++      return;
++    }
 +  }
 +  // An edge pixel's key needs its neighbours, so read the rectangle again with
 +  // a one-pixel border. Pixels outside the framebuffer stay transparent black.
@@ -159,7 +175,8 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
 +  }
 +  readback_noise::ApplyToCopy(image, 1, 1, dest.data() + top,
 +                              -ptrdiff_t(stride), int32_t(desc.size.x),
-+                              int32_t(desc.size.y), readback_noise::kRGBA);
++                              int32_t(desc.size.y), readback_noise::kRGBA,
++                              notLost->info.options.premultipliedAlpha);
 +}
 +
  bool ClientWebGLContext::DoReadPixels(const webgl::ReadPixelsDesc& desc,
