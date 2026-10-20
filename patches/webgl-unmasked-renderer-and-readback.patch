@@ -70,12 +70,13 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
  
    nsRFPService::PotentiallyDumpImage(PrincipalOrNull(), dataSurface);
    if (extractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
-@@ -2650,6 +2681,19 @@
+@@ -2650,6 +2681,20 @@
        return GetString(LOCAL_GL_RENDERER);
      };
  
-+    // The identity's renderer. Stock answers RENDERER and
-+    // UNMASKED_RENDERER_WEBGL with the same string, so both read this.
++    // The identity's GPU. It stands in for the real context's strings only,
++    // after stock's fingerprinting-protection checks, so RENDERER and the
++    // UNMASKED_* strings always name the same GPU.
 +    const auto GetSpoofedRenderer = [&]() -> Maybe<std::string> {
 +      nsAutoString stored;
 +      if (WebGLParamsManager::GetRenderer(GetUserContextId(), stored)) {
@@ -90,7 +91,25 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
      const auto GetUnmaskedVendor = [&]() {
        const auto prefLock = StaticPrefs::webgl_override_unmasked_vendor();
        if (!prefLock->IsEmpty()) {
-@@ -2674,6 +2718,9 @@
+@@ -2658,6 +2703,17 @@
+       return GetString(LOCAL_GL_VENDOR);
+     };
+ 
++    const auto GetSpoofedVendor = [&]() -> Maybe<std::string> {
++      nsAutoString stored;
++      if (WebGLParamsManager::GetVendor(GetUserContextId(), stored)) {
++        return Some(std::string(NS_ConvertUTF16toUTF8(stored).get()));
++      }
++      if (auto value = MaskConfig::GetString("webGl:vendor")) {
++        return Some(*value);
++      }
++      return Nothing();
++    };
++
+     // -
+ 
+     Maybe<std::string> ret;
+@@ -2674,6 +2730,9 @@
            allowRenderer = false;
          }
          if (allowRenderer) {
@@ -100,7 +119,7 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
            ret = GetUnmaskedRenderer();
            if (ret) {
              ret = Some(webgl::SanitizeRenderer(*ret));
-@@ -2710,15 +2757,8 @@
+@@ -2710,40 +2769,21 @@
  
          switch (pname) {
            case dom::WEBGL_debug_renderer_info_Binding::UNMASKED_RENDERER_WEBGL:
@@ -113,12 +132,59 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
 -            }
 -            if (auto value = MaskConfig::GetString("webGl:renderer")) {
 -              ret = Some(value.value());
-+            ret = GetSpoofedRenderer();
-+            if (ret) {
-               break;
-             }
+-              break;
+-            }
              if (ShouldResistFingerprinting(RFPTarget::WebGLRenderInfo) ||
-@@ -5702,6 +5742,7 @@
+                 ShouldResistFingerprinting(RFPTarget::WebGLRendererConstant)) {
+               ret = Some("Mozilla"_ns);
+             } else {
+-              ret = GetUnmaskedRenderer();
+-              if (ret && StaticPrefs::webgl_sanitize_unmasked_renderer()) {
+-                ret = Some(webgl::SanitizeRenderer(*ret));
++              ret = GetSpoofedRenderer();
++              if (!ret) {
++                ret = GetUnmaskedRenderer();
++                if (ret && StaticPrefs::webgl_sanitize_unmasked_renderer()) {
++                  ret = Some(webgl::SanitizeRenderer(*ret));
++                }
+               }
+             }
+             break;
+ 
+           case dom::WEBGL_debug_renderer_info_Binding::UNMASKED_VENDOR_WEBGL:
+-            {
+-              nsAutoString stored;
+-              if (WebGLParamsManager::GetVendor(GetUserContextId(), stored)) {
+-                ret = Some(NS_ConvertUTF16toUTF8(stored));
+-                break;
+-              }
+-            }
+-            if (auto value = MaskConfig::GetString("webGl:vendor")) {
+-              ret = Some(value.value());
+-              break;
+-            }
+             if (ShouldResistFingerprinting(RFPTarget::WebGLRenderInfo)) {
+               ret = Some("Mozilla"_ns);
+             } else if (ShouldResistFingerprinting(
+@@ -2768,10 +2808,13 @@
+                            RFPTarget::WebGLVendorConstant)) {
+               ret = Some("Mozilla"_ns);
+             } else {
+-              ret = GetUnmaskedVendor();
+-              if (ret &&
+-                  ShouldResistFingerprinting(RFPTarget::WebGLVendorSanitize)) {
+-                ret = Some(webgl::SanitizeVendor(*ret));
++              ret = GetSpoofedVendor();
++              if (!ret) {
++                ret = GetUnmaskedVendor();
++                if (ret && ShouldResistFingerprinting(
++                               RFPTarget::WebGLVendorSanitize)) {
++                  ret = Some(webgl::SanitizeVendor(*ret));
++                }
+               }
+             }
+             break;
+@@ -5702,6 +5745,7 @@
        } else {
          RecordCanvasUsage(CanvasExtractionAPI::ReadPixels,
                            CSSIntSize(width, height));
@@ -126,7 +192,7 @@ diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.c
          if (extraction == CanvasUtils::ImageExtraction::Randomize) {
            const auto pii = webgl::PackingInfoInfo::For(desc.pi);
            // DoReadPixels() requres pii to be Some().
-@@ -5728,6 +5769,55 @@
+@@ -5728,6 +5772,55 @@
    });
  }
  

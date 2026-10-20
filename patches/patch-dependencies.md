@@ -24,6 +24,7 @@ be listed there.
 |-------|-------------|
 | `audio-context-spoofing.patch` | `AudioContext:outputLatency` |
 | `audio-fingerprint-manager.patch` | `audio:seed` |
+| `audio-noise-on-copy.patch` | `audio:seed` (noises a copy of the AnalyserNode frequency data; needs `audio-fingerprint-manager.patch`) |
 | `canvas-readback-noise.patch` | `aliasmode:canvasSeed` (adds `dom/canvas/AliasModeReadbackNoise.h`) |
 | `chromeutil.patch` | `debug` |
 | `fingerprint-injection.patch` | `navigator.*`, `screen.*`, `window.*` |
@@ -38,17 +39,21 @@ be listed there.
 | `media-codec-spoofing.patch` | `media:spoof_codecs` (bypasses `PDMFactory::Supports()` in `MP4Decoder`/`MatroskaDecoder` so `canPlayType()`/`isTypeSupported()` don't leak system codec libraries) |
 | `media-device-spoofing.patch` | `mediaDevices:*` |
 | `navigator-spoofing.patch` | `navigator.*`, `timezone` |
+| `network-ipv4-only.patch` | `network:ipv4Only` (no IPv6 route: IPv4-only lookups, IPv6 connects and ICE candidates fail as on such a host) |
 | `network-patches.patch` | `headers.*`, `navigator.userAgent` |
 | `no-css-animations.patch` | `instantAnimations` |
 | `screen-spoofing.patch` | `screen.width`, `screen.height` |
+| `screen-workarea-baseline.patch` | `navigator.platform` (read through `Navigator::GetPlatform`; the available area follows stock baseline protection; needs `screen-spoofing.patch`) |
 | `system-ui-font-spoofing.patch` | `navigator.platform` |
 | `timezone-spoofing.patch` | `timezone` |
 | `touchscreen-fingerprint-spoofing.patch` | `navigator.maxTouchPoints` |
+| `touchscreen-points-baseline.patch` | `navigator.maxTouchPoints` (collapsed as stock baseline protection does; needs `touchscreen-fingerprint-spoofing.patch`) |
 | `voice-spoofing.patch` | `voices:*` |
 | `webgl-spoofing.patch` | `webGl:*` |
 | `webgl-stated-limits.patch` | `webGl:parameters`, `webGl2:parameters` (read where the WebGL context runs, so a stated limit binds) |
 | `webgl-unmasked-renderer-and-readback.patch` | `webGl:renderer`, `aliasmode:canvasSeed` (applies after `webgl-spoofing.patch`; needs `canvas-readback-noise.patch`) |
 | `webrtc-ip-spoofing.patch` | `webrtc:ipv4`, `webrtc:ipv6`, `navigator.platform` |
+| `webrtc-port-range.patch` | `navigator.platform` (host UDP sockets bind in the identity OS's ephemeral port range) |
 | `webrtc-srflx-public-server.patch` | `webrtc:ipv4`, `webrtc:ipv6` (applies after `webrtc-ip-spoofing.patch`) |
 
 To regenerate the list: `grep -l 'MaskConfig::' patches/*.patch`.

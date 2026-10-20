@@ -1,0 +1,19 @@
+diff --git a/dom/base/Navigator.cpp b/dom/base/Navigator.cpp
+--- a/dom/base/Navigator.cpp
++++ b/dom/base/Navigator.cpp
+@@ -994,8 +994,14 @@
+   // collapses it to 0. The target is not a phone: it is the ordinary Windows
+   // touchscreen laptop, which reports a digitizer here while keeping a fine
+   // primary pointer. See force-default-pointer.patch for the matching
+-  // `any-pointer: coarse` half.
++  // `any-pointer: coarse` half. Stock Firefox's baseline fingerprinting
++  // protection collapses the configured count as it would the real one.
+   if (auto value = MaskConfig::GetUint32("navigator.maxTouchPoints")) {
++    if (aCallerType != CallerType::System &&
++        nsContentUtils::ShouldResistFingerprinting(
++            GetDocShell(), RFPTarget::MaxTouchPointsCollapse)) {
++      return nsRFPService::CollapseMaxTouchPoints(value.value());
++    }
+     return value.value();
+   }
+   nsIDocShell* docshell = GetDocShell();

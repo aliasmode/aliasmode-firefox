@@ -108,12 +108,19 @@ function importCertificates() {
   }
 }
 
-// The available area of the screen the identity claims. Outside fullscreen a
-// real window is never larger than the available area of its screen.
+// The available area of the screen the identity claims, as a page reads it.
+// Outside fullscreen a real window is never larger than the available area of
+// its screen. Stock's baseline fingerprinting protection derives that area from
+// the screen size: less 48px on Windows and 76px on macOS.
 function claimedAvailSize() {
-  const width = ChromeUtils.camouGetInt("screen.availWidth");
-  const height = ChromeUtils.camouGetInt("screen.availHeight");
-  return width && height ? { width, height } : null;
+  const width = ChromeUtils.camouGetInt("screen.width");
+  const height = ChromeUtils.camouGetInt("screen.height");
+  if (!width || !height) {
+    return null;
+  }
+  const platform = ChromeUtils.camouGetString("navigator.platform") || "";
+  const offset = platform.startsWith("Win") ? 48 : platform.startsWith("Mac") ? 76 : 0;
+  return { width, height: height - offset };
 }
 
 // The real available area of the screen the window is on. window.screen
