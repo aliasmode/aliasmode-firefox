@@ -34,7 +34,7 @@ be listed there.
 | `force-default-pointer.patch` | `navigator.maxTouchPoints` |
 | `geolocation-spoofing.patch` | `geolocation:*` |
 | `global-style-sheets.patch` | `disableTheming` |
-| `glyph-advance-noise.patch` | `aliasmode:textSeed` |
+| `glyph-advance-noise.patch` | `aliasmode:textSeed` (per font, keyed by the font's PostScript name, so neither its folder nor a web font load changes it) |
 | `locale-spoofing.patch` | `locale:*`, `navigator.language` |
 | `media-codec-spoofing.patch` | `media:spoof_codecs` (bypasses `PDMFactory::Supports()` in `MP4Decoder`/`MatroskaDecoder` so `canPlayType()`/`isTypeSupported()` don't leak system codec libraries) |
 | `media-device-spoofing.patch` | `mediaDevices:*` |
@@ -53,8 +53,8 @@ be listed there.
 | `webgl-stated-limits.patch` | `webGl:parameters`, `webGl2:parameters` (read where the WebGL context runs, so a stated limit binds) |
 | `webgl-unmasked-renderer-and-readback.patch` | `webGl:renderer`, `aliasmode:canvasSeed` (applies after `webgl-spoofing.patch`; needs `canvas-readback-noise.patch`) |
 | `webrtc-ip-spoofing.patch` | `webrtc:ipv4`, `webrtc:ipv6`, `navigator.platform` |
-| `webrtc-port-range.patch` | `navigator.platform` (host UDP sockets bind in the identity OS's ephemeral port range) |
-| `webrtc-srflx-public-server.patch` | `webrtc:ipv4`, `webrtc:ipv6` (applies after `webrtc-ip-spoofing.patch`) |
+| `webrtc-port-range.patch` | `navigator.platform` (host UDP sockets get ports as the identity OS hands them out: its range, in sequence on Windows) |
+| `webrtc-proxy-ice-agent.patch` | `webrtc:ipv4`, `webrtc:ipv6`, `navigator.platform` (the ICE agent a page sees behind the enforced proxy; applies after `webrtc-ip-spoofing.patch`) |
 
 To regenerate the list: `grep -l 'MaskConfig::' patches/*.patch`.
 

@@ -11,9 +11,11 @@ Written by daijro.
 #include <tuple>
 #include <utility>
 #include <cstdint>
+#include <atomic>
 #include <optional>
 #include <codecvt>
 #include "mozilla/glue/Debug.h"
+#include "mozilla/RandomNum.h"
 #include <cstdlib>
 #include <cstdio>
 #include <mutex>
@@ -208,20 +210,68 @@ inline SpoofedOS GetSpoofedOS() {
   return os;
 }
 
-// The ephemeral port range of the OS the identity presents, which is where
-// that OS's kernel puts a socket bound to port 0. A page sees these ports in
-// WebRTC candidates.
-inline std::optional<std::pair<uint16_t, uint16_t>> SpoofedEphemeralPorts() {
+// How an OS's kernel picks the port of a UDP socket bound to port 0: its
+// ephemeral range, and whether it hands the ports out in sequence (Windows)
+// or at random (macOS, and Linux with its default net.ipv4.ip_local_port_range).
+// A page sees these ports in WebRTC candidates.
+struct EphemeralPortPolicy {
+  uint16_t lo;
+  uint16_t hi;
+  bool sequential;
+  bool operator==(const EphemeralPortPolicy& aOther) const {
+    return lo == aOther.lo && hi == aOther.hi &&
+           sequential == aOther.sequential;
+  }
+  bool operator!=(const EphemeralPortPolicy& aOther) const {
+    return !(*this == aOther);
+  }
+};
+
+inline std::optional<EphemeralPortPolicy> SpoofedPortPolicy() {
   switch (GetSpoofedOS()) {
     case SpoofedOS::Windows:
+      return EphemeralPortPolicy{49152, 65535, true};
     case SpoofedOS::MacOS:
-      return std::pair<uint16_t, uint16_t>{49152, 65535};
+      return EphemeralPortPolicy{49152, 65535, false};
     case SpoofedOS::Linux:
-      // The kernel's default net.ipv4.ip_local_port_range.
-      return std::pair<uint16_t, uint16_t>{32768, 60999};
+      return EphemeralPortPolicy{32768, 60999, false};
     default:
       return std::nullopt;
   }
+}
+
+inline EphemeralPortPolicy HostPortPolicy() {
+#if defined(XP_WIN)
+  return EphemeralPortPolicy{49152, 65535, true};
+#elif defined(XP_MACOSX)
+  return EphemeralPortPolicy{49152, 65535, false};
+#else
+  return EphemeralPortPolicy{32768, 60999, false};
+#endif
+}
+
+// The first of aCount ports the kernel of aPolicy would give sockets bound one
+// after another. In sequence, one counter per process starts at a random point
+// of the range, and now and then a port is skipped, as other programs on the
+// machine take some in between.
+inline uint16_t NextEphemeralPort(const EphemeralPortPolicy& aPolicy,
+                                  uint32_t aCount = 1) {
+  const uint32_t span = uint32_t(aPolicy.hi - aPolicy.lo) + 1u;
+  if (!aPolicy.sequential) {
+    return uint16_t(aPolicy.lo + mozilla::RandomUint64OrDie() % span);
+  }
+  static std::atomic<uint32_t> sNext{0};
+  uint32_t offset = sNext.load();
+  uint32_t next;
+  do {
+    uint32_t start = offset ? offset - 1 : uint32_t(mozilla::RandomUint64OrDie() % span);
+    const uint32_t skip = mozilla::RandomUint64OrDie() % 8 == 0 ? 1 : 0;
+    start = (start + skip) % span;
+    next = (start + aCount) % span + 1;
+    if (sNext.compare_exchange_weak(offset, next)) {
+      return uint16_t(aPolicy.lo + start);
+    }
+  } while (true);
 }
 
 inline std::optional<std::array<uint32_t, 4>> GetRect(

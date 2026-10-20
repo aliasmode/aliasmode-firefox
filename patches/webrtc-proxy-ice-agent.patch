@@ -1,0 +1,922 @@
+diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+--- a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
++++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+@@ -4,8 +4,10 @@
+ 
+ #include "PeerConnectionImpl.h"
+ 
++#include <algorithm>
+ #include <cerrno>
+ #include <cstdlib>
++#include <functional>
+ #include <set>
+ #include <sstream>
+ #include <vector>
+@@ -100,6 +102,7 @@
+ #include "mozilla/glean/DomMediaWebrtcMetrics.h"
+ #include "mozilla/net/DataChannelProtocol.h"
+ #include "mozilla/net/WebrtcProxyConfig.h"
++#include "mozilla/net/DNS.h"
+ #include "MaskConfig.hpp"
+ #include "mozilla/RandomNum.h"
+ #include "mozilla/RustRegex.h"
+@@ -235,10 +238,9 @@
+ 
+ namespace mozilla {
+ 
+-// Camoufox: ICE candidate priorities for the fabricated host/srflx candidates,
+-// measured from real Firefox (constant across sessions). Defined here at the
+-// top of the namespace because GetStats() (above the fabrication code) also
+-// references kSrflxPriority. host UDP / host TCP / srflx.
++// The priorities stock Firefox gives host UDP, host TCP and srflx candidates
++// (constant across sessions), for the candidates of the ICE agent behind the
++// proxy.
+ static constexpr uint32_t kHostUdpPriority = 2122252543u;
+ static constexpr uint32_t kHostTcpPriority = 2105524479u;
+ static constexpr uint32_t kSrflxPriority = 1686052863u;
+@@ -1811,23 +1813,22 @@
+ 
+   // Camoufox: stats sanitization reads the spoof IP from MaskConfig.
+   bool shouldSanitizeStats = ShouldSpoofCandidateIP();
+-  // The port of the fabricated srflx (if any), so the synthetic getStats
+-  // entry below matches the candidate/SDP exactly. 0 = nothing fabricated.
+-  uint16_t fabricatedSrflxPort = mFabricatedSrflxPort;
+-  nsString fabricatedSrflxStatsId = mFabricatedSrflxStatsId;
+-  nsString fabricatedSrflxUfrag = mFabricatedSrflxUfrag;
++  // Behind the proxy the real agent has no candidates and has failed; the
++  // page sees the local candidates and state of the one it talks to.
++  const bool fakeIce = mFakeIce;
++  const auto fakeIceState = mFakeIceState;
++  std::vector<FakeIceCandidateStat> fakeStats = mFakeIceStats;
+ 
+   GetStats(aSelector, false)
+       ->Then(
+           GetMainThreadSerialEventTarget(), __func__,
+-          [promise, window = mWindow, shouldSanitizeStats,
+-           fabricatedSrflxPort, fabricatedSrflxStatsId, fabricatedSrflxUfrag](
++          [promise, window = mWindow, shouldSanitizeStats, fakeIce,
++           fakeIceState, fakeStats = std::move(fakeStats)](
+               UniquePtr<dom::RTCStatsReportInternal>&& aReport) {
+             // Camoufox: Sanitize IP addresses in stats before exposing to JS
+             if (shouldSanitizeStats && aReport) {
+               auto ipv4Opt = MaskConfig::GetString("webrtc:ipv4");
+               auto ipv6Opt = MaskConfig::GetString("webrtc:ipv6");
+-              bool haveSrflx = false;
+               for (auto& candStat : aReport->mIceCandidateStats) {
+                 // Only this side's candidates carry our address, and an mDNS
+                 // host name is already opaque: stock reports it as-is.
+@@ -1836,11 +1837,6 @@
+                         dom::RTCStatsType::Local_candidate) {
+                   continue;
+                 }
+-                if (candStat.mCandidateType.WasPassed() &&
+-                    candStat.mCandidateType.Value() ==
+-                        dom::RTCIceCandidateType::Srflx) {
+-                  haveSrflx = true;
+-                }
+                 if (candStat.mAddress.WasPassed() && !candStat.mAddress.Value().IsEmpty() &&
+                     !StringEndsWith(candStat.mAddress.Value(), u".local"_ns)) {
+                   nsAutoCString addr;
+@@ -1854,38 +1850,35 @@
+                   }
+                 }
+               }
+-              // Camoufox: if we fabricated a srflx into the candidate stream /
+-              // SDP (TCP-proxy case) but getStats() carries no srflx local
+-              // candidate, add a matching one so the three surfaces agree.
+-              // A srflx in the SDP with no local-candidate stat is itself a
+-              // detectable inconsistency. Pair / RTT stats are intentionally
+-              // NOT fabricated: they are legitimately absent with no remote
+-              // peer, so leaving them empty matches a real browser.
+-              std::string spoofIp = ipv4Opt ? ipv4Opt.value()
+-                                            : (ipv6Opt ? ipv6Opt.value()
+-                                                       : std::string());
+-              if (!haveSrflx && !spoofIp.empty() && fabricatedSrflxPort != 0 &&
+-                  !fabricatedSrflxStatsId.IsEmpty()) {
+-                dom::RTCIceCandidateStats cand;
+-                cand.mType.Construct(dom::RTCStatsType::Local_candidate);
+-                cand.mTimestamp.Construct(aReport->mTimestamp);
+-                cand.mCandidateType.Construct(dom::RTCIceCandidateType::Srflx);
+-                cand.mPriority.Construct(kSrflxPriority);
+-                cand.mAddress.Construct(NS_ConvertUTF8toUTF16(spoofIp.c_str()));
+-                cand.mPort.Construct(fabricatedSrflxPort);
+-                cand.mProtocol.Construct(NS_ConvertASCIItoUTF16("udp"));
+-                cand.mProxied.Construct(NS_ConvertASCIItoUTF16("proxied"));
+-                cand.mId.Construct(fabricatedSrflxStatsId);
+-                // Firefox 156 exposes foundation and usernameFragment on
+-                // candidate stats: the same values as the SDP line.
+-                cand.mFoundation.Construct(u"1"_ns);
+-                cand.mUsernameFragment.Construct(fabricatedSrflxUfrag);
+-                // Associate with the same transport as the real candidates;
+-                // transportId is required, so with none there is nothing to
+-                // attach a candidate to.
+-                if (!aReport->mIceCandidateStats.IsEmpty()) {
+-                  cand.mTransportId =
+-                      aReport->mIceCandidateStats[0].mTransportId;
++            }
++            if (fakeIce && aReport) {
++              for (auto& transport : aReport->mTransportStats) {
++                if (transport.mIceState.WasPassed()) {
++                  transport.mIceState.Value() = fakeIceState;
++                } else {
++                  transport.mIceState.Construct(fakeIceState);
++                }
++              }
++              if (!aReport->mTransportStats.IsEmpty() &&
++                  aReport->mTransportStats[0].mId.WasPassed()) {
++                const nsString transportId =
++                    aReport->mTransportStats[0].mId.Value();
++                for (const auto& stat : fakeStats) {
++                  dom::RTCIceCandidateStats cand;
++                  cand.mType.Construct(dom::RTCStatsType::Local_candidate);
++                  cand.mTimestamp.Construct(aReport->mTimestamp);
++                  cand.mId.Construct(stat.mId);
++                  cand.mTransportId = transportId;
++                  cand.mAddress.Construct(stat.mAddress);
++                  cand.mPort.Construct(stat.mPort);
++                  cand.mProtocol.Construct(stat.mProtocol);
++                  cand.mCandidateType.Construct(stat.mType);
++                  cand.mPriority.Construct(int32_t(stat.mPriority));
++                  cand.mFoundation.Construct(stat.mFoundation);
++                  cand.mUsernameFragment.Construct(stat.mUfrag);
++                  if (stat.mTcp) {
++                    cand.mTcpType.Construct(dom::RTCIceTcpCandidateType::Active);
++                  }
+                   if (!aReport->mIceCandidateStats.AppendElement(cand,
+                                                                  fallible)) {
+                     mozalloc_handle_oom(0);
+@@ -3492,28 +3485,6 @@
+     const std::string& ufrag) {
+   STAMP_TIMECARD(mTimeCard, "Send Ice Candidate to content");
+ 
+-  // Camoufox: remember if a real public candidate ever reached content, so we
+-  // only fabricate one at gathering-complete when ICE produced none.
+-  if (candidate.find(" typ srflx ") != std::string::npos ||
+-      candidate.find(" typ prflx ") != std::string::npos ||
+-      candidate.find(" typ relay ") != std::string::npos) {
+-    mSurfacedPublicCandidate = true;
+-  }
+-  if (candidate.find(" typ host") != std::string::npos) {
+-    mSurfacedHostCandidate = true;
+-    // "candidate:<foundation> <component> <transport> <priority> <address>
+-    //  <port> typ host ..."
+-    std::istringstream fields(candidate);
+-    std::string foundation, component, transport, priority, address, port;
+-    if (!mSurfacedHostUdpPort &&
+-        (fields >> foundation >> component >> transport >> priority >>
+-         address >> port) &&
+-        (transport == "UDP" || transport == "udp")) {
+-      mSurfacedHostUdpPort =
+-          static_cast<uint16_t>(std::strtoul(port.c_str(), nullptr, 10));
+-    }
+-  }
+-
+   // Check if IP spoofing is enabled
+   if (ShouldSpoofCandidateIP()) {
+     std::string spoofedCandidate = SpoofCandidateIP(candidate);
+@@ -3695,235 +3666,364 @@
+ }
+ 
+ // *****
+-// Synthetic srflx fabrication (TCP-proxy case)
++// The ICE agent behind the proxy
+ // *****
+ //
+-// Behind a TCP/HTTP proxy, STUN (UDP) cannot traverse, so no server-reflexive
+-// candidate ever forms and the rewrite paths above have nothing to operate on
+-// -> WebRTC reports n/a, which anti-bot systems flag. We fabricate a synthetic
+-// srflx carrying the spoof IP (the proxy exit IP, already in config) so the
+-// page sees a plausible public candidate. The port/priority are derived as a
+-// pure function of the spoof IP so the live-stream, SDP, and getStats() copies
+-// all agree without threading state through the stats continuation.
+-
+-// A fresh random ephemeral port per PeerConnection. Real Firefox binds a new
+-// UDP socket per PeerConnection and REUSES that port for the host candidate and
+-// its srflx; we mirror that (one port, shared, random per PC) -- never derived
+-// from the IP. The only observable pattern is the RANGE: it must be the OS
+-// ephemeral range, which is OS-specific. Linux uses 32768-60999 (the kernel
+-// default ip_local_port_range); Windows/macOS use 49152-65535. Pick the range
+-// matching the SPOOFED OS (navigator.platform) so a Linux profile never emits a
+-// >60999 port that real Linux Firefox couldn't, and vice-versa.
+-static uint16_t RandomEphemeralPort() {
+-  uint16_t lo = 32768, hi = 60999;  // Linux default
+-  auto platform = MaskConfig::GetString("navigator.platform");
+-  if (platform) {
+-    const std::string& p = platform.value();
+-    // "Win32"/"Win64" -> Windows, "MacIntel"/"Mac" -> macOS: both 49152-65535.
+-    if (p.find("Win") != std::string::npos ||
+-        p.find("Mac") != std::string::npos) {
+-      lo = 49152;
+-      hi = 65535;
+-    }
+-  }
+-  uint32_t span = static_cast<uint32_t>(hi - lo) + 1u;
+-  return static_cast<uint16_t>(lo + (mozilla::RandomUint64OrDie() % span));
+-}
+-
+-// A realistic STUN round-trip delay (ms) before the srflx surfaces. Real
+-// Firefox emits the srflx ~30-90ms after the host candidate; a zero-delay
+-// srflx (host and srflx arriving together) is an unnatural timing signature.
+-static uint32_t RandomSrflxDelayMs() {
+-  return static_cast<uint32_t>(30u + (mozilla::RandomUint64OrDie() % 60u));
+-}
+-
+-// Extract the value of the first "<prefix><value>" line in an SDP (prefix like
+-// "a=mid:" or "a=ice-ufrag:"). Returns empty string if not found.
+-static std::string FirstSdpLineValue(const std::string& sdp,
+-                                     const std::string& prefix) {
+-  std::istringstream iss(sdp);
+-  std::string line;
+-  while (std::getline(iss, line)) {
+-    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+-      line.pop_back();
+-    }
+-    if (line.compare(0, prefix.size(), prefix) == 0) {
+-      return line.substr(prefix.size());
++// With the proxy enforced (media.peerconnection.ice.proxy_only) no UDP leaves
++// the machine: the real agent gathers nothing and fails at once. The page sees
++// instead what stock Firefox on the identity's network shows, and none of it
++// sends a packet:
++// - host candidates under one mDNS name, the UDP one on a port the identity's
++//   OS would give, numbered as nICEr numbers them;
++// - per configured STUN/TURN server what such a server gives: a srflx with the
++//   proxy's address after a round trip from one that could answer, an
++//   icecandidateerror at once for loopback, after a failed lookup for a name
++//   that cannot resolve, and after nICEr's 11.1 s of retransmissions for an
++//   address that could not answer;
++// - end-of-candidates, then gathering complete, as nICEr signals them;
++// - those candidates in getStats(), and an ICE state of "new";
++// - checks that fail once a remote peer is set: 11.1 s after a remote
++//   candidate, or after the 5 s trickle grace period with none.
++
++namespace {
++
++// nICEr's STUN client sends 7 requests from a 100 ms RTO, doubling, then waits
++// 1600 ms more: a server that never answers fails 11.1 s after the first one.
++constexpr uint32_t kFakeIceStunTimeoutMs = 11100;
++// media.peerconnection.ice.trickle_grace_period: with no remote candidate,
++// checks fail this long after they could start.
++constexpr uint32_t kFakeIceGraceMs = 5000;
++
++uint32_t FakeIceJitter(uint32_t aMax) {
++  return static_cast<uint32_t>(mozilla::RandomUint64OrDie() % (aMax + 1));
++}
++
++enum class FakeServerOutcome { Answers, FailsAtOnce, FailsLookup, TimesOut };
++
++struct FakeIceServer {
++  std::string mUrl;  // as icecandidateerror reports it
++  // What nICEr tells servers apart by when it numbers candidates: the
++  // address; names are not resolved yet then, so all names count as one.
++  std::string mKey;
++  bool mTurn = false;
++  FakeServerOutcome mOutcome = FakeServerOutcome::TimesOut;
++  uint32_t mAtMs = 0;
++};
++
++// The UDP STUN and TURN servers of the configuration, in order, with what
++// each gives a host whose public address is the proxy's.
++std::vector<FakeIceServer> PlanFakeIceServers(
++    const RTCConfigurationInternal& aConfig) {
++  static const nsLiteralCString kSpecialUse[] = {
++      ".localhost"_ns, ".local"_ns, ".invalid"_ns,   ".test"_ns, ".example"_ns,
++      ".internal"_ns,  ".onion"_ns, ".home.arpa"_ns, ".alt"_ns};
++  std::vector<FakeIceServer> servers;
++  for (const auto& server : aConfig.mIceServers) {
++    for (const auto& url : server.mUrls) {
++      auto parsed =
++          IceServerParser::ParseStunTurnUri(NS_ConvertUTF16toUTF8(url));
++      if (parsed.isErr()) {
++        parsed.unwrapErr().SuppressException();
++        continue;
++      }
++      const auto& uri = parsed.inspect();
++      // A UDP gather uses UDP servers only.
++      if (uri.IsTls() || uri.mTransport != IceServerParser::IceTransport::Udp) {
++        continue;
++      }
++      nsAutoCString host(uri.mHost);
++      if (StringBeginsWith(host, "["_ns) && StringEndsWith(host, "]"_ns)) {
++        host = Substring(host, 1, host.Length() - 2);
++      }
++      FakeIceServer fake;
++      fake.mTurn = uri.IsTurn();
++      fake.mUrl = std::string(fake.mTurn ? "turn:" : "stun:") + uri.mHost.get() +
++                  ":" + std::to_string(uri.mPort);
++      net::NetAddr addr;
++      if (NS_SUCCEEDED(addr.InitFromString(host))) {
++        if (addr.raw.family == AF_INET6) {
++          // The host gathers on IPv4; nICEr skips a server of the other family.
++          continue;
++        }
++        fake.mKey = host.get();
++        if (addr.IsLoopbackAddr()) {
++          // A closed port on this machine answers with ICMP at once.
++          fake.mOutcome = FakeServerOutcome::FailsAtOnce;
++        } else if (addr.IsIPAddrAny() || addr.IsIPAddrLocal() ||
++                   addr.IsIPAddrShared()) {
++          fake.mOutcome = FakeServerOutcome::TimesOut;
++          fake.mAtMs = kFakeIceStunTimeoutMs + FakeIceJitter(15);
++        } else {
++          fake.mOutcome = FakeServerOutcome::Answers;
++          fake.mAtMs = 12 + FakeIceJitter(48);
++        }
++      } else {
++        ToLowerCase(host);
++        const nsAutoCString dotted("."_ns + host);
++        bool special = host.FindChar('.') < 0;
++        for (const auto& suffix : kSpecialUse) {
++          special |= StringEndsWith(dotted, suffix);
++        }
++        if (special) {
++          fake.mOutcome = FakeServerOutcome::FailsLookup;
++          fake.mAtMs = 2 + FakeIceJitter(10);
++        } else {
++          // Not resolved here: a lookup from this machine would reach its own
++          // resolver around the proxy.
++          fake.mOutcome = FakeServerOutcome::Answers;
++          fake.mAtMs = 15 + FakeIceJitter(50);
++        }
++      }
++      servers.push_back(std::move(fake));
+     }
+   }
+-  return std::string();
++  return servers;
+ }
+ 
+-void PeerConnectionImpl::MaybeFabricateSrflxCandidate() {
+-  // Only what a real gather could have produced and did not: host candidates
+-  // when none reached the page, and a srflx only when the page configured an
+-  // ICE server. `new RTCPeerConnection()` with no iceServers gathers host
+-  // candidates alone in stock Firefox; a srflx there (plus a second host set
+-  // after end-of-candidates) was a direct tell.
+-  const bool wantHosts = !mSurfacedHostCandidate;
+-  const bool wantSrflx =
+-      !mSurfacedPublicCandidate && !mJsConfiguration.mIceServers.IsEmpty();
+-  if (!ShouldSpoofCandidateIP() || (!wantHosts && !wantSrflx)) {
+-    return;
+-  }
++}  // namespace
+ 
+-  auto ipv4Opt = MaskConfig::GetString("webrtc:ipv4");
+-  auto ipv6Opt = MaskConfig::GetString("webrtc:ipv6");
+-  std::string spoofIp = ipv4Opt ? ipv4Opt.value()
+-                                : (ipv6Opt ? ipv6Opt.value() : std::string());
+-  if (spoofIp.empty()) {
+-    return;
+-  }
++void PeerConnectionImpl::DriveFakeIceState(dom::RTCIceTransportState aState) {
++  mFakeIceState = aState;
++  mFakeIceDriving = true;
++  IceConnectionStateChange(mFakeIceTransportId, aState, Nothing());
++  mFakeIceDriving = false;
++}
+ 
+-  // Attach to the first media section of the local description. Prefer the
+-  // pending description (offer just set); fall back to current.
+-  const std::string& sdp = !mPendingLocalDescription.empty()
+-                               ? mPendingLocalDescription
+-                               : mCurrentLocalDescription;
+-  if (sdp.empty()) {
+-    return;
+-  }
+-  std::string mid = FirstSdpLineValue(sdp, "a=mid:");
+-  std::string ufrag = FirstSdpLineValue(sdp, "a=ice-ufrag:");
+-  if (mid.empty() || ufrag.empty()) {
+-    return;
+-  }
++void PeerConnectionImpl::DriveFakeGathering(dom::RTCIceGathererState aState) {
++  mFakeIceDriving = true;
++  IceGatheringStateChange(mFakeIceTransportId, aState);
++  mFakeIceDriving = false;
++}
+ 
+-  // One ephemeral port, shared by the UDP host candidate and the srflx, exactly
+-  // as real Firefox reuses its local RTP port across both: the real host's when
+-  // one surfaced. Remember it so the getStats() synthetic srflx reports the
+-  // same port.
+-  uint16_t port =
+-      mSurfacedHostUdpPort ? mSurfacedHostUdpPort : RandomEphemeralPort();
+-  if (wantSrflx) {
+-    mFabricatedSrflxPort = port;
+-    mFabricatedSrflxUfrag = NS_ConvertUTF8toUTF16(ufrag.c_str());
+-    if (mFabricatedSrflxStatsId.IsEmpty()) {
+-      // Candidate stats ids are 8 lowercase hex digits.
+-      char id[9];
+-      SprintfLiteral(id, "%08x",
+-                     static_cast<uint32_t>(mozilla::RandomUint64OrDie()));
+-      mFabricatedSrflxStatsId.AssignASCII(id);
+-    }
++void PeerConnectionImpl::StartFakeIce(const std::string& aTransportId) {
++  mFakeIce = true;
++  mFakeIceTransportId = aTransportId;
++  FakeIceGather();
++  if (mIceChecksStarted) {
++    StartFakeIceChecks();
+   }
++}
+ 
+-  // mDNS .local hostname for the host candidates, like real Firefox
+-  // (obfuscate_host_addresses). PCUuidGenerator yields "{uuid}"; strip braces.
+-  // Both host candidates (UDP + TCP) share the same hostname, as real FF does.
+-  std::string mdnsHost;
+-  if (mUuidGen) {
+-    std::string uuid;
+-    if (mUuidGen->Generate(&uuid)) {
+-      if (!uuid.empty() && uuid.front() == '{') uuid.erase(0, 1);
+-      if (!uuid.empty() && uuid.back() == '}') uuid.pop_back();
+-      mdnsHost = uuid + ".local";
++void PeerConnectionImpl::FakeIceGather() {
++  const std::string transportId = mFakeIceTransportId;
++  std::string ufrag;
++  mJsepSession->ForEachTransceiver([&](const JsepTransceiver& aTransceiver) {
++    if (ufrag.empty() &&
++        aTransceiver.mTransport.mTransportId == transportId) {
++      ufrag = aTransceiver.mTransport.mLocalUfrag;
+     }
+-  }
+-  if (wantHosts && mdnsHost.empty()) {
++  });
++  auto ipv4 = MaskConfig::GetString("webrtc:ipv4");
++  auto ipv6 = MaskConfig::GetString("webrtc:ipv6");
++  const std::string publicIp = ipv4 ? *ipv4 : (ipv6 ? *ipv6 : std::string());
++  std::string uuid;
++  if (ufrag.empty() || publicIp.empty() || !mUuidGen ||
++      !mUuidGen->Generate(&uuid)) {
+     return;
+   }
+-
+-  // Helper: append an a=candidate line into both local-description strings,
+-  // right after the first m-section's a=mid: line. The SDP attribute form is
+-  // "a=candidate:<foundation>..." (no leading "candidate:"). Captures `this` and
+-  // `mid` BY VALUE so it stays valid when copied into the delayed srflx runnable
+-  // below (which keeps the PC alive via a strong RefPtr).
+-  auto injectIntoSdp = [this, mid](const std::string& candStr) {
+-    std::string sdpCand = candStr;
+-    const std::string kCandPrefix = "candidate:";
+-    if (sdpCand.compare(0, kCandPrefix.size(), kCandPrefix) == 0) {
+-      sdpCand.erase(0, kCandPrefix.size());
+-    }
+-    std::string candLine = "a=candidate:" + sdpCand + "\r\n";
+-    auto into = [&](std::string& target) {
+-      if (target.empty()) return;
+-      std::string midLine = "a=mid:" + mid;
+-      size_t pos = target.find(midLine);
+-      if (pos == std::string::npos) {
+-        target += candLine;
+-        return;
+-      }
+-      size_t eol = target.find('\n', pos);
+-      if (eol == std::string::npos) {
+-        target += "\r\n" + candLine;
+-      } else {
+-        target.insert(eol + 1, candLine);
++  // PCUuidGenerator yields "{uuid}"; the mDNS name is the bare uuid.
++  if (!uuid.empty() && uuid.front() == '{') uuid.erase(0, 1);
++  if (!uuid.empty() && uuid.back() == '}') uuid.pop_back();
++  const std::string mdnsHost = uuid + ".local";
++
++  const bool relayOnly = RelayOnly();
++  std::vector<FakeIceServer> servers = PlanFakeIceServers(mJsConfiguration);
++  bool anyTurn = false;
++  for (const auto& server : servers) {
++    anyTurn |= server.mTurn;
++  }
++
++  // nICEr numbers candidates by kind and base, and server-derived ones also
++  // by server: host UDP, then per STUN server a srflx, per TURN server a
++  // srflx and a relay, then host TCP.
++  enum Kind { HostUdp, Srflx, Relay, HostTcp };
++  std::vector<std::pair<Kind, std::string>> foundations;
++  auto foundation = [&](Kind aKind, const std::string& aKey) {
++    for (size_t i = 0; i < foundations.size(); ++i) {
++      if (foundations[i].first == aKind && foundations[i].second == aKey) {
++        return std::to_string(i);
+       }
+-    };
+-    into(mPendingLocalDescription);
+-    into(mCurrentLocalDescription);
++    }
++    foundations.emplace_back(aKind, aKey);
++    return std::to_string(foundations.size() - 1);
++  };
++  const std::string hostUdpFoundation = foundation(HostUdp, "");
++  std::string srflxFoundation;
++  Maybe<uint32_t> srflxAt;
++  uint32_t endAt = 0;
++  for (const auto& server : servers) {
++    const std::string f = foundation(Srflx, server.mKey);
++    if (server.mTurn) {
++      foundation(Relay, server.mKey);
++    }
++    if (server.mOutcome == FakeServerOutcome::Answers && !relayOnly &&
++        (!srflxAt || server.mAtMs < *srflxAt)) {
++      srflxAt = Some(server.mAtMs);
++      srflxFoundation = f;
++    }
++    endAt = std::max(endAt, server.mAtMs);
++  }
++  const std::string hostTcpFoundation = foundation(HostTcp, "");
++
++  const uint16_t port = MaskConfig::NextEphemeralPort(
++      MaskConfig::SpoofedPortPolicy().value_or(MaskConfig::HostPortPolicy()), 2);
++  // nICEr binds the active TCP candidate itself, on a random port of
++  // 49152-65535; the candidate line says 9, getStats() the bound port.
++  const uint16_t tcpPort =
++      static_cast<uint16_t>(49152 + mozilla::RandomUint64OrDie() % 16384);
++  const nsString ufrag16 = NS_ConvertUTF8toUTF16(ufrag.c_str());
++  auto statsId = [] {
++    char id[9];
++    SprintfLiteral(id, "%x",
++                   static_cast<uint32_t>(mozilla::RandomUint64OrDie()));
++    return NS_ConvertASCIItoUTF16(id);
+   };
+ 
+-  // Mark surfaced now so re-entrant ICE-state changes during the delay below
+-  // don't fabricate a second set.
+-  if (wantHosts) {
+-    mSurfacedHostCandidate = true;
+-    mSurfacedHostUdpPort = port;
++  RefPtr<PeerConnectionImpl> self(this);
++  auto emitError = [self](const std::string& aUrl) {
++    IceCandidateErrorInfo info;
++    info.mUrl = aUrl;
++    info.mErrorCode = 701;
++    self->OnCandidateError(info);
++  };
++  auto later = [self](uint32_t aDelayMs, std::function<void()>&& aStep) {
++    GetMainThreadSerialEventTarget()->DelayedDispatch(
++        NS_NewRunnableFunction("PeerConnectionImpl::FakeIceStep",
++                               [self, step = std::move(aStep)]() {
++                                 if (!self->IsClosed()) {
++                                   step();
++                                 }
++                               }),
++        aDelayMs);
++  };
++
++  // An ICMP error for a server on this machine arrives before gathering shows.
++  for (const auto& server : servers) {
++    if (server.mOutcome == FakeServerOutcome::FailsAtOnce) {
++      emitError(server.mUrl);
++    }
+   }
+-  if (wantSrflx) {
+-    mSurfacedPublicCandidate = true;
++  // With relay only and no TURN server there is nothing to gather.
++  if (!relayOnly || anyTurn) {
++    DriveFakeGathering(dom::RTCIceGathererState::Gathering);
+   }
+-
+-  JSErrorResult rv;
+-
+-  // STEP 1: the two host candidates first (UDP foundation 0, TCP foundation 2),
+-  // sharing one mDNS hostname -- the exact pair real Firefox emits. CreepJS
+-  // latches the first (UDP host) as "host connection" and its foundation 0 as
+-  // "type & base ip". Neither carries a real IP (.local / port 9), so an
+-  // IP-from-SDP probe still sees 0.0.0.0 and keeps waiting, just like a real
+-  // browser whose srflx round-trip is still in flight.
+-  if (wantHosts) {
++  if (!relayOnly) {
+     std::ostringstream hostUdp;
+-    hostUdp << "candidate:0 1 UDP " << kHostUdpPriority << " " << mdnsHost << " "
+-            << port << " typ host";
+-    std::string hostUdpCand = hostUdp.str();
+-    injectIntoSdp(hostUdpCand);
+-    mPCObserver->OnIceCandidate(0, ObString(mid.c_str()),
+-                                ObString(hostUdpCand.c_str()),
+-                                ObString(ufrag.c_str()), rv);
++    hostUdp << "candidate:" << hostUdpFoundation << " 1 UDP "
++            << kHostUdpPriority << " " << mdnsHost << " " << port
++            << " typ host";
++    mFakeIceStats.push_back({statsId(), dom::RTCIceCandidateType::Host, NS_ConvertASCIItoUTF16("udp"),
++                             NS_ConvertUTF8toUTF16(mdnsHost.c_str()), port,
++                             kHostUdpPriority,
++                             NS_ConvertASCIItoUTF16(hostUdpFoundation.c_str()),
++                             false, ufrag16});
++    CandidateReady(hostUdp.str(), transportId, ufrag);
+ 
+     std::ostringstream hostTcp;
+-    hostTcp << "candidate:2 1 TCP " << kHostTcpPriority << " " << mdnsHost
++    hostTcp << "candidate:" << hostTcpFoundation << " 1 TCP "
++            << kHostTcpPriority << " " << mdnsHost
+             << " 9 typ host tcptype active";
+-    std::string hostTcpCand = hostTcp.str();
+-    injectIntoSdp(hostTcpCand);
+-    mPCObserver->OnIceCandidate(0, ObString(mid.c_str()),
+-                                ObString(hostTcpCand.c_str()),
+-                                ObString(ufrag.c_str()), rv);
++    mFakeIceStats.push_back({statsId(), dom::RTCIceCandidateType::Host, NS_ConvertASCIItoUTF16("tcp"),
++                             NS_ConvertUTF8toUTF16(mdnsHost.c_str()), tcpPort,
++                             kHostTcpPriority,
++                             NS_ConvertASCIItoUTF16(hostTcpFoundation.c_str()),
++                             true, ufrag16});
++    CandidateReady(hostTcp.str(), transportId, ufrag);
++  }
++
++  if (srflxAt) {
++    std::ostringstream srflx;
++    srflx << "candidate:" << srflxFoundation << " 1 UDP " << kSrflxPriority
++          << " " << publicIp << " " << port << " typ srflx raddr 0.0.0.0 rport 0";
++    FakeIceCandidateStat stat{statsId(), dom::RTCIceCandidateType::Srflx,
++                              NS_ConvertASCIItoUTF16("udp"), NS_ConvertUTF8toUTF16(publicIp.c_str()),
++                              port, kSrflxPriority,
++                              NS_ConvertASCIItoUTF16(srflxFoundation.c_str()),
++                              false, ufrag16};
++    later(*srflxAt, [self, srflx = srflx.str(), stat, publicIp, port,
++                     transportId, ufrag]() {
++      // The srflx becomes the default candidate, as in stock's SDP.
++      self->UpdateDefaultCandidate(publicIp, port, "", 0, transportId);
++      // getStats() lists it after the host UDP candidate, as nICEr does.
++      auto& stats = self->mFakeIceStats;
++      stats.insert(stats.begin() + std::min<size_t>(1, stats.size()), stat);
++      self->CandidateReady(srflx, transportId, ufrag);
++    });
++  }
++
++  // Lookups and timeouts report their errors when they end; the last of them
++  // ends gathering, which reports end-of-candidates and then complete.
++  std::vector<std::string> errorsAtEnd;
++  for (const auto& server : servers) {
++    if (server.mOutcome != FakeServerOutcome::FailsLookup &&
++        server.mOutcome != FakeServerOutcome::TimesOut) {
++      continue;
++    }
++    if (server.mAtMs == endAt) {
++      errorsAtEnd.push_back(server.mUrl);
++    } else {
++      later(server.mAtMs, [emitError, url = server.mUrl]() { emitError(url); });
++    }
++  }
++  auto complete = [self, emitError, errorsAtEnd, transportId, ufrag]() {
++    for (const auto& url : errorsAtEnd) {
++      emitError(url);
++    }
++    self->CandidateReady("", transportId, ufrag);
++    self->DriveFakeGathering(dom::RTCIceGathererState::Complete);
++  };
++  if (endAt) {
++    later(endAt, std::move(complete));
++  } else {
++    complete();
+   }
++}
+ 
+-  if (!wantSrflx) {
++void PeerConnectionImpl::StartFakeIceChecks() {
++  // A renegotiation keeps the checks of the first negotiation.
++  if (mFakeChecksStarted) {
+     return;
+   }
++  mFakeChecksStarted = true;
++  const std::string remote =
++      mJsepSession->GetRemoteDescription(kJsepDescriptionPendingOrCurrent);
++  if (remote.find("a=candidate:") != std::string::npos) {
++    DriveFakeIceState(dom::RTCIceTransportState::Checking);
++    ScheduleFakeIceFailure(kFakeIceStunTimeoutMs + FakeIceJitter(30));
++  } else {
++    ScheduleFakeIceFailure(kFakeIceGraceMs + FakeIceJitter(30));
++  }
++}
+ 
+-  // STEP 2: the srflx (foundation 1, spoof/proxy IP, SAME port as the UDP host),
+-  // delayed by a realistic STUN round-trip so the timing matches a real gather.
+-  // The SDP line is added just before the event fires, so a fingerprinter that
+-  // reads pc.localDescription.sdp inside the candidate handler (CreepJS's
+-  // getIPAddress) sees the public IP on this event -> "stun connection" + "ip"
+-  // populate. A strong ref keeps the PC alive across the delay; bail if closed.
+-  std::ostringstream srflx;
+-  srflx << "candidate:1 1 UDP " << kSrflxPriority << " " << spoofIp << " "
+-        << port << " typ srflx raddr 0.0.0.0 rport 0";
+-  std::string srflxCand = srflx.str();
++void PeerConnectionImpl::FakeRemoteCandidate() {
++  if (!mFakeChecksStarted ||
++      mFakeIceState == dom::RTCIceTransportState::Failed) {
++    return;
++  }
++  if (mFakeIceState == dom::RTCIceTransportState::New) {
++    DriveFakeIceState(dom::RTCIceTransportState::Checking);
++  }
++  ScheduleFakeIceFailure(kFakeIceStunTimeoutMs + FakeIceJitter(30));
++}
+ 
++void PeerConnectionImpl::ScheduleFakeIceFailure(uint32_t aDelayMs) {
++  const uint32_t generation = ++mFakeFailGeneration;
+   RefPtr<PeerConnectionImpl> self(this);
+-  std::string midCopy = mid;
+-  std::string ufragCopy = ufrag;
+   GetMainThreadSerialEventTarget()->DelayedDispatch(
+       NS_NewRunnableFunction(
+-          "PeerConnectionImpl::EmitFabricatedSrflx",
+-          [self, srflxCand, midCopy, ufragCopy, injectIntoSdp]() {
+-            if (self->IsClosed() || !self->mPCObserver) {
++          "PeerConnectionImpl::FakeIceFailure",
++          [self, generation]() {
++            if (self->IsClosed() || generation != self->mFakeFailGeneration ||
++                self->mFakeIceState == dom::RTCIceTransportState::Failed) {
+               return;
+             }
+-            injectIntoSdp(srflxCand);
+-            JSErrorResult rv2;
+-            self->mPCObserver->OnIceCandidate(
+-                0, ObString(midCopy.c_str()), ObString(srflxCand.c_str()),
+-                ObString(ufragCopy.c_str()), rv2);
++            self->DriveFakeIceState(dom::RTCIceTransportState::Failed);
++            // The transport is gone, and the data channels with it.
++            if (self->mDataConnection) {
++              self->mDataConnection->CloseAll();
++            }
+           }),
+-      RandomSrflxDelayMs());
++      aDelayMs);
+ }
+ 
+ // Implements the steps to "change the selected candidate pair and state".
+@@ -3942,6 +4042,20 @@
+     return;
+   }
+ 
++  // Behind the enforced proxy the real agent fails at once for want of UDP;
++  // from then on the page hears the agent of "The ICE agent behind the proxy".
++  if (!mFakeIceDriving) {
++    if (mFakeIce) {
++      return;
++    }
++    if (domState == RTCIceTransportState::Failed && mForceProxy &&
++        ShouldSpoofCandidateIP() &&
++        mIceGatheringState != RTCIceGatheringState::Complete) {
++      StartFakeIce(aTransportId);
++      return;
++    }
++  }
++
+   CSFLogDebug(LOGTAG, "IceConnectionStateChange: %s %d (%p)",
+               aTransportId.c_str(), static_cast<int>(domState), this);
+ 
+@@ -4053,47 +4167,6 @@
+   // 12. If connectionIceConnectionStateChanged is true, fire an event
+   //     named iceconnectionstatechange at connection.
+   if (connectionIceConnectionStateChanged) {
+-    // Camoufox: behind a TCP proxy, ICE fails almost immediately and gathering
+-    // never reaches "complete" (no null-candidate event fires), so the
+-    // gathering-complete trigger never runs. The ICE connection state DOES
+-    // change (-> Failed within ~20ms), and by now SetLocalDescription has
+-    // populated the local SDP. Fabricate the synthetic srflx here too, on any
+-    // terminal/active ICE state, if none surfaced. Idempotent via
+-    // mSurfacedPublicCandidate.
+-    if (mIceConnectionState == RTCIceConnectionState::Failed ||
+-        mIceConnectionState == RTCIceConnectionState::Disconnected ||
+-        mIceConnectionState == RTCIceConnectionState::Connected ||
+-        mIceConnectionState == RTCIceConnectionState::Completed) {
+-      // Camoufox: when ICE failed before gathering ever started (forced proxy,
+-      // no TURN), stock Firefox's observable sequence is still
+-      // new -> gathering -> [candidates] -> complete -> null candidate. Walk
+-      // it here around the fabricated candidates, otherwise the page sits at
+-      // "new" forever, which no real Firefox does (daijro/camoufox#774).
+-      const bool replayGathering =
+-          mIceConnectionState == RTCIceConnectionState::Failed &&
+-          mIceGatheringState == RTCIceGatheringState::New;
+-      if (replayGathering) {
+-        IceGatheringStateChange(aTransportId,
+-                                dom::RTCIceGathererState::Gathering);
+-      }
+-      MaybeFabricateSrflxCandidate();
+-      if (replayGathering) {
+-        // After the delayed fabricated srflx (RandomSrflxDelayMs <= 90 ms).
+-        RefPtr<PeerConnectionImpl> self(this);
+-        std::string transportId = aTransportId;
+-        GetMainThreadSerialEventTarget()->DelayedDispatch(
+-            NS_NewRunnableFunction(
+-                "PeerConnectionImpl::CompleteReplayedGathering",
+-                [self, transportId]() {
+-                  if (self->IsClosed()) {
+-                    return;
+-                  }
+-                  self->IceGatheringStateChange(
+-                      transportId, dom::RTCIceGathererState::Complete);
+-                }),
+-            120);
+-      }
+-    }
+     pcObserver->OnStateChange(PCObserverStateType::IceConnectionState, rv);
+   }
+ 
+@@ -4241,6 +4314,10 @@
+     return;
+   }
+ 
++  if (mFakeIce && !mFakeIceDriving) {
++    return;
++  }
++
+   CSFLogWarn(LOGTAG, "IceGatheringStateChange: %s %d (%p)",
+              aTransportId.c_str(), static_cast<int>(state), this);
+ 
+@@ -4279,12 +4356,6 @@
+   // If connectionIceGatheringStateChanged is true, fire an event named
+   // icegatheringstatechange at connection.
+   if (gatheringStateChanged) {
+-    // Camoufox: gathering just finished. If spoofing is on but ICE produced no
+-    // public candidate (TCP-proxy case), fabricate a synthetic srflx now, so it
+-    // reaches the page before the null-candidate "done" event fired below.
+-    if (mIceGatheringState == RTCIceGatheringState::Complete) {
+-      MaybeFabricateSrflxCandidate();
+-    }
+     // NOTE: If we're in the "complete" case, our JS code will fire a null
+     // icecandidate event after firing the icegatheringstatechange event.
+     // Fire an event named icecandidate using the RTCPeerConnectionIceEvent
+@@ -5168,6 +5239,11 @@
+     }
+   }
+ 
++  mIceChecksStarted = true;
++  if (mFakeIce) {
++    StartFakeIceChecks();
++  }
++
+   nsCOMPtr<nsIRunnable> runnable(
+       WrapRunnable(mTransportHandler, &MediaTransportHandler::StartIceChecks,
+                    aSession.IsIceControlling(), attributes));
+@@ -5211,6 +5287,10 @@
+   MOZ_ASSERT(NS_IsMainThread());
+   MOZ_ASSERT(!aTransportId.empty());
+ 
++  if (mFakeIce && !aCandidate.empty()) {
++    FakeRemoteCandidate();
++  }
++
+   bool obfuscate_host_addresses = Preferences::GetBool(
+       "media.peerconnection.ice.obfuscate_host_addresses", false);
+ 
+diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.h b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
+--- a/dom/media/webrtc/jsapi/PeerConnectionImpl.h
++++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
+@@ -616,11 +616,15 @@
+   bool ShouldSpoofCandidateIP() const;
+   nsresult SanitizeSDPForIPLeak(std::string& sdp);
+   std::string SpoofCandidateIP(const std::string& candidate);
+-  // Camoufox: when spoofing is on and ICE surfaced no public candidate (TCP
+-  // proxy: STUN is UDP, can't traverse, so no srflx forms), fabricate a
+-  // synthetic srflx carrying the spoof IP into the live candidate stream and
+-  // the local SDP so WebRTC reports the proxy IP instead of n/a.
+-  void MaybeFabricateSrflxCandidate();
++  // The ICE agent a page sees behind the enforced proxy; see
++  // "The ICE agent behind the proxy" in PeerConnectionImpl.cpp.
++  void StartFakeIce(const std::string& aTransportId);
++  void FakeIceGather();
++  void StartFakeIceChecks();
++  void FakeRemoteCandidate();
++  void ScheduleFakeIceFailure(uint32_t aDelayMs);
++  void DriveFakeIceState(dom::RTCIceTransportState aState);
++  void DriveFakeGathering(dom::RTCIceGathererState aState);
+   void SendLocalIceCandidateToContent(uint16_t level, const std::string& mid,
+                                       const std::string& candidate,
+                                       const std::string& ufrag);
+@@ -718,24 +722,28 @@
+   unsigned int mDataChannelsClosed = 0;
+ 
+   bool mForceIceTcp;
+-  // Camoufox: set true once a public (srflx/prflx/relay) candidate has been
+-  // surfaced to content, so MaybeFabricateSrflxCandidate() only fabricates when
+-  // ICE produced none (the TCP-proxy case where STUN can't form a srflx).
+-  bool mSurfacedPublicCandidate = false;
+-  // Camoufox: the port of the fabricated srflx, so the getStats() synthetic
+-  // entry reports the SAME port as the candidate string / SDP line. 0 = none.
+-  uint16_t mFabricatedSrflxPort = 0;
+-  // Camoufox: the fabricated srflx's getStats() id, in the shape real candidate
+-  // ids have (8 hex digits), fixed for the life of the connection.
+-  nsString mFabricatedSrflxStatsId;
+-  // Camoufox: the local ICE ufrag the fabricated srflx was emitted under; its
+-  // getStats() entry reports it as usernameFragment, as a real candidate does.
+-  nsString mFabricatedSrflxUfrag;
+-  // Camoufox: set once a host candidate reached content (real or fabricated),
+-  // with the UDP host's port, so a fabricated srflx never brings a second host
+-  // set and shares the host's port as a real gather does.
+-  bool mSurfacedHostCandidate = false;
+-  uint16_t mSurfacedHostUdpPort = 0;
++  // The ICE agent behind the enforced proxy: on once the real one failed for
++  // want of UDP; then only its own state changes reach the page.
++  bool mFakeIce = false;
++  bool mFakeIceDriving = false;
++  std::string mFakeIceTransportId;
++  dom::RTCIceTransportState mFakeIceState = dom::RTCIceTransportState::New;
++  bool mIceChecksStarted = false;
++  bool mFakeChecksStarted = false;
++  uint32_t mFakeFailGeneration = 0;
++  // Its local candidates as getStats() reports them, in stock's order.
++  struct FakeIceCandidateStat {
++    nsString mId;
++    dom::RTCIceCandidateType mType;
++    nsString mProtocol;
++    nsString mAddress;
++    uint16_t mPort;
++    uint32_t mPriority;
++    nsString mFoundation;
++    bool mTcp;
++    nsString mUfrag;
++  };
++  std::vector<FakeIceCandidateStat> mFakeIceStats;
+   Maybe<dom::RTCRtcpMuxPolicy> mRtcpMuxPolicy;
+   RefPtr<MediaTransportHandler> mTransportHandler;
+ 

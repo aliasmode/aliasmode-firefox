@@ -12,39 +12,26 @@ diff --git a/dom/media/webrtc/transport/common.build b/dom/media/webrtc/transpor
 diff --git a/dom/media/webrtc/transport/nr_socket_prsock.cpp b/dom/media/webrtc/transport/nr_socket_prsock.cpp
 --- a/dom/media/webrtc/transport/nr_socket_prsock.cpp
 +++ b/dom/media/webrtc/transport/nr_socket_prsock.cpp
-@@ -111,6 +111,10 @@
+@@ -111,6 +111,9 @@
  #include "prnetdb.h"
  #include "runnable_utils.h"
  
-+// Camoufox: for the identity's ephemeral port range in CreateSocket.
++// For the identity's ephemeral port policy in CreateSocket.
 +#include "MaskConfig.hpp"
-+#include "mozilla/RandomNum.h"
 +
  #if defined(MOZILLA_INTERNAL_API)
  // csi_platform.h deep in nrappkit defines LOG_INFO and LOG_WARNING
  #  ifdef LOG_INFO
-@@ -1582,11 +1586,20 @@
-                                               nr_socket_local_listen,
-                                               nr_socket_local_accept};
- 
-+// Camoufox: the range this host's kernel gives a socket bound to port 0.
-+#if defined(XP_WIN) || defined(XP_MACOSX)
-+static constexpr std::pair<uint16_t, uint16_t> kHostEphemeralPorts{49152, 65535};
-+#else
-+static constexpr std::pair<uint16_t, uint16_t> kHostEphemeralPorts{32768, 60999};
-+#endif
-+
- /* static */
- int NrSocketBase::CreateSocket(
+@@ -1587,6 +1590,8 @@
      nr_transport_addr* addr, RefPtr<NrSocketBase>* sock,
      const std::shared_ptr<NrSocketProxyConfig>& config) {
    int r, _status;
 +  uint16_t port = 0;
-+  std::optional<std::pair<uint16_t, uint16_t>> ports;
++  std::optional<MaskConfig::EphemeralPortPolicy> ports;
  
    if (IsForbiddenAddress(addr)) {
      ABORT(R_REJECTED);
-@@ -1596,25 +1609,51 @@
+@@ -1596,25 +1601,49 @@
      ABORT(R_REJECTED);
    }
  
@@ -57,14 +44,14 @@ diff --git a/dom/media/webrtc/transport/nr_socket_prsock.cpp b/dom/media/webrtc/
 -      *sock = new NrTcpSocket(config);
 -    } else {
 -      *sock = new NrSocket();
-+  // Camoufox: a UDP socket's port reaches the page in its ICE candidates. When
-+  // the identity's OS gives out ephemeral ports from another range than this
-+  // host does, pick one from the identity's range, at random as its kernel
-+  // would, so a Windows identity on Linux never shows a Linux port.
++  // A UDP socket's port reaches the page in its ICE candidates. When the
++  // identity's OS gives out ephemeral ports another way than this host does
++  // (another range, or in sequence rather than at random), pick the port its
++  // kernel would, so a Windows identity on Linux shows Windows ports.
 +  if (addr->protocol == IPPROTO_UDP &&
 +      !nr_transport_addr_get_port(addr, &port) && port == 0) {
-+    ports = MaskConfig::SpoofedEphemeralPorts();
-+    if (ports == kHostEphemeralPorts) {
++    ports = MaskConfig::SpoofedPortPolicy();
++    if (ports && *ports == MaskConfig::HostPortPolicy()) {
 +      ports.reset();
      }
 -  } else {
@@ -77,10 +64,8 @@ diff --git a/dom/media/webrtc/transport/nr_socket_prsock.cpp b/dom/media/webrtc/
 +    nr_transport_addr bindAddr;
 +    nr_transport_addr_copy(&bindAddr, addr);
 +    if (ports) {
-+      uint32_t span = static_cast<uint32_t>(ports->second - ports->first) + 1u;
-+      nr_transport_addr_set_port(
-+          &bindAddr, ports->first + static_cast<int>(
-+                                        mozilla::RandomUint64OrDie() % span));
++      nr_transport_addr_set_port(&bindAddr,
++                                 MaskConfig::NextEphemeralPort(*ports));
 +      nr_transport_addr_fmt_addr_string(&bindAddr);
 +    }
 +

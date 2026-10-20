@@ -9,7 +9,7 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.cpp b/gfx/thebes/gfxHarfBuzzShaper.cpp
  #include "harfbuzz/hb-ot.h"
  #include "harfbuzz/hb.h"
  #include "mozilla/Sprintf.h"
-@@ -1193,6 +1194,20 @@
+@@ -1193,6 +1194,16 @@
    }();
  
    gfxFontEntry* entry = mFont->GetFontEntry();
@@ -20,20 +20,49 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.cpp b/gfx/thebes/gfxHarfBuzzShaper.cpp
 +  static const uint32_t sTextSeed =
 +      MaskConfig::GetUint32("aliasmode:textSeed").value_or(0);
 +  if (sTextSeed) {
-+    mAdvanceSalt =
-+        mozilla::HashGeneric(sTextSeed, mozilla::HashString(
-+                                            entry->Name().get(),
-+                                            entry->Name().Length())) |
-+        1;
++    mAdvanceSalt = mozilla::HashGeneric(sTextSeed, FontIdentityHash(entry)) | 1;
 +  }
 +
    if (!mUseFontGetGlyph) {
      // get the cmap table and find offset to our subtable
      mCmapTable = entry->GetFontTable(TRUETYPE_TAG('c', 'm', 'a', 'p'));
-@@ -1505,6 +1520,13 @@
+@@ -1505,6 +1516,46 @@
         // will fit without requiring separate allocation
         // for charToGlyphArray
  
++// The font's own identity, the same for the same font in any folder, process
++// or load: its PostScript name (else its full name, else its 'head' table).
++// The entry's name is not: on Linux it is the font file's path, and a
++// downloaded font on Windows and macOS gets a new random name on every load.
++/* static */
++uint32_t gfxHarfBuzzShaper::FontIdentityHash(gfxFontEntry* aEntry) {
++  nsAutoCString name;
++  {
++    gfxFontEntry::AutoTable nameTable(aEntry,
++                                      TRUETYPE_TAG('n', 'a', 'm', 'e'));
++    if (nameTable) {
++      if (NS_FAILED(gfxFontUtils::ReadCanonicalName(
++              nameTable, gfxFontUtils::NAME_ID_POSTSCRIPT, name)) ||
++          name.IsEmpty()) {
++        (void)gfxFontUtils::ReadCanonicalName(
++            nameTable, gfxFontUtils::NAME_ID_FULL, name);
++      }
++    }
++  }
++  if (!name.IsEmpty()) {
++    return mozilla::HashString(name.get(), name.Length());
++  }
++  gfxFontEntry::AutoTable headTable(aEntry, TRUETYPE_TAG('h', 'e', 'a', 'd'));
++  uint32_t len = 0;
++  const char* data =
++      headTable ? hb_blob_get_data(headTable, &len) : nullptr;
++  if (data && len) {
++    return mozilla::HashBytes(data, len);
++  }
++  const nsCString family = aEntry->FamilyName();
++  return mozilla::HashString(family.get(), family.Length());
++}
++
 +int32_t gfxHarfBuzzShaper::AdvanceNoise(hb_position_t aAdvance) const {
 +  if (!mAdvanceSalt || aAdvance <= 0) {
 +    return 0;
@@ -44,7 +73,7 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.cpp b/gfx/thebes/gfxHarfBuzzShaper.cpp
  nsresult gfxHarfBuzzShaper::SetGlyphsFromRun(gfxShapedText* aShapedText,
                                               uint32_t aOffset, uint32_t aLength,
                                               const char16_t* aText,
-@@ -1699,7 +1721,7 @@
+@@ -1699,7 +1750,7 @@
        advance = appUnitsPerDevUnit * intWidth + iOffset;
      } else {
        iOffset = floor(hb2appUnits * i_offset + 0.5);
@@ -53,7 +82,7 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.cpp b/gfx/thebes/gfxHarfBuzzShaper.cpp
      }
      // Check if it's a simple one-to-one mapping
      if (glyphsInClump == 1 &&
-@@ -1765,7 +1787,8 @@
+@@ -1765,7 +1816,8 @@
            advance = appUnitsPerDevUnit * intAdvance;
          } else {
            iOffset = floor(hb2appUnits * i_offset + 0.5);
@@ -66,7 +95,7 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.cpp b/gfx/thebes/gfxHarfBuzzShaper.cpp
 diff --git a/gfx/thebes/gfxHarfBuzzShaper.h b/gfx/thebes/gfxHarfBuzzShaper.h
 --- a/gfx/thebes/gfxHarfBuzzShaper.h
 +++ b/gfx/thebes/gfxHarfBuzzShaper.h
-@@ -277,6 +277,16 @@
+@@ -277,6 +277,17 @@
    // when available (only set if the 'vert' feature is not available).
    bool mUseVerticalPresentationForms = false;
  
@@ -79,6 +108,7 @@ diff --git a/gfx/thebes/gfxHarfBuzzShaper.h b/gfx/thebes/gfxHarfBuzzShaper.h
 +  // itself, so glyphs of one width (every glyph of a monospaced font, tabular
 +  // digits) keep one width.
 +  int32_t AdvanceNoise(hb_position_t aAdvance) const;
++  static uint32_t FontIdentityHash(gfxFontEntry* aEntry);
 +
    // these are set from the FindGlyf callback on first use of the glyf data
    mutable bool mLoadedLocaGlyf = false;
