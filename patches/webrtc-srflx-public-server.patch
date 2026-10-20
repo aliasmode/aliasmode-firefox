@@ -1,0 +1,81 @@
+diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+--- a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
++++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+@@ -100,6 +100,7 @@
+ #include "mozilla/glean/DomMediaWebrtcMetrics.h"
+ #include "mozilla/net/DataChannelProtocol.h"
+ #include "mozilla/net/WebrtcProxyConfig.h"
++#include "mozilla/net/DNS.h"
+ #include "MaskConfig.hpp"
+ #include "mozilla/RandomNum.h"
+ #include "mozilla/RustRegex.h"
+@@ -3754,15 +3755,64 @@
+   return std::string();
+ }
+ 
++// Whether the page configured a STUN or TURN server that could answer with the
++// public address: a host name outside the special-use domains, or an address
++// outside the loopback, private, link-local, shared and unspecified ranges. The
++// name is not resolved here: behind the proxy stock gathers no STUN at all, and
++// a lookup from this machine would reach its own resolver around the proxy.
++static bool ConfiguresPublicIceServer(
++    const RTCConfigurationInternal& aConfig) {
++  static const nsLiteralCString kSpecialUse[] = {
++      ".localhost"_ns, ".local"_ns, ".invalid"_ns,   ".test"_ns, ".example"_ns,
++      ".internal"_ns,  ".onion"_ns, ".home.arpa"_ns, ".alt"_ns};
++  for (const auto& server : aConfig.mIceServers) {
++    for (const auto& url : server.mUrls) {
++      auto parsed =
++          IceServerParser::ParseStunTurnUri(NS_ConvertUTF16toUTF8(url));
++      if (parsed.isErr()) {
++        parsed.unwrapErr().SuppressException();
++        continue;
++      }
++      nsAutoCString host(parsed.inspect().mHost);
++      if (StringBeginsWith(host, "["_ns) && StringEndsWith(host, "]"_ns)) {
++        host = Substring(host, 1, host.Length() - 2);
++      }
++      net::NetAddr addr;
++      if (NS_SUCCEEDED(addr.InitFromString(host))) {
++        if (!addr.IsIPAddrAny() && !addr.IsLoopbackAddr() &&
++            !addr.IsIPAddrLocal() && !addr.IsIPAddrShared()) {
++          return true;
++        }
++        continue;
++      }
++      ToLowerCase(host);
++      if (host.FindChar('.') < 0) {
++        continue;
++      }
++      const nsAutoCString dotted("."_ns + host);
++      bool special = false;
++      for (const auto& suffix : kSpecialUse) {
++        special |= StringEndsWith(dotted, suffix);
++      }
++      if (!special) {
++        return true;
++      }
++    }
++  }
++  return false;
++}
++
+ void PeerConnectionImpl::MaybeFabricateSrflxCandidate() {
+   // Only what a real gather could have produced and did not: host candidates
+   // when none reached the page, and a srflx only when the page configured an
+-  // ICE server. `new RTCPeerConnection()` with no iceServers gathers host
+-  // candidates alone in stock Firefox; a srflx there (plus a second host set
+-  // after end-of-candidates) was a direct tell.
++  // ICE server that could report the public address. `new
++  // RTCPeerConnection()` with no iceServers gathers host candidates alone in
++  // stock Firefox; a srflx there (plus a second host set after
++  // end-of-candidates) was a direct tell, and so was one from a server on
++  // loopback.
+   const bool wantHosts = !mSurfacedHostCandidate;
+-  const bool wantSrflx =
+-      !mSurfacedPublicCandidate && !mJsConfiguration.mIceServers.IsEmpty();
++  const bool wantSrflx = !mSurfacedPublicCandidate &&
++                         ConfiguresPublicIceServer(mJsConfiguration);
+   if (!ShouldSpoofCandidateIP() || (!wantHosts && !wantSrflx)) {
+     return;
+   }

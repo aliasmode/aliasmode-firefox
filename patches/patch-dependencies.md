@@ -46,8 +46,10 @@ be listed there.
 | `touchscreen-fingerprint-spoofing.patch` | `navigator.maxTouchPoints` |
 | `voice-spoofing.patch` | `voices:*` |
 | `webgl-spoofing.patch` | `webGl:*` |
+| `webgl-stated-limits.patch` | `webGl:parameters`, `webGl2:parameters` (read where the WebGL context runs, so a stated limit binds) |
 | `webgl-unmasked-renderer-and-readback.patch` | `webGl:renderer`, `aliasmode:canvasSeed` (applies after `webgl-spoofing.patch`; needs `canvas-readback-noise.patch`) |
 | `webrtc-ip-spoofing.patch` | `webrtc:ipv4`, `webrtc:ipv6`, `navigator.platform` |
+| `webrtc-srflx-public-server.patch` | `webrtc:ipv4`, `webrtc:ipv6` (applies after `webrtc-ip-spoofing.patch`) |
 
 To regenerate the list: `grep -l 'MaskConfig::' patches/*.patch`.
 
