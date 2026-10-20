@@ -1,18 +1,19 @@
 diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
 --- a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
 +++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
-@@ -4,8 +4,10 @@
+@@ -4,8 +4,11 @@
  
  #include "PeerConnectionImpl.h"
  
 +#include <algorithm>
  #include <cerrno>
++#include <cmath>
  #include <cstdlib>
 +#include <functional>
  #include <set>
  #include <sstream>
  #include <vector>
-@@ -100,6 +102,7 @@
+@@ -100,6 +103,7 @@
  #include "mozilla/glean/DomMediaWebrtcMetrics.h"
  #include "mozilla/net/DataChannelProtocol.h"
  #include "mozilla/net/WebrtcProxyConfig.h"
@@ -20,7 +21,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
  #include "MaskConfig.hpp"
  #include "mozilla/RandomNum.h"
  #include "mozilla/RustRegex.h"
-@@ -235,10 +238,9 @@
+@@ -235,10 +239,9 @@
  
  namespace mozilla {
  
@@ -34,7 +35,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
  static constexpr uint32_t kHostUdpPriority = 2122252543u;
  static constexpr uint32_t kHostTcpPriority = 2105524479u;
  static constexpr uint32_t kSrflxPriority = 1686052863u;
-@@ -1811,23 +1813,22 @@
+@@ -1811,23 +1814,22 @@
  
    // Camoufox: stats sanitization reads the spoof IP from MaskConfig.
    bool shouldSanitizeStats = ShouldSpoofCandidateIP();
@@ -65,7 +66,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
                for (auto& candStat : aReport->mIceCandidateStats) {
                  // Only this side's candidates carry our address, and an mDNS
                  // host name is already opaque: stock reports it as-is.
-@@ -1836,11 +1837,6 @@
+@@ -1836,11 +1838,6 @@
                          dom::RTCStatsType::Local_candidate) {
                    continue;
                  }
@@ -77,7 +78,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
                  if (candStat.mAddress.WasPassed() && !candStat.mAddress.Value().IsEmpty() &&
                      !StringEndsWith(candStat.mAddress.Value(), u".local"_ns)) {
                    nsAutoCString addr;
-@@ -1854,38 +1850,35 @@
+@@ -1854,38 +1851,35 @@
                    }
                  }
                }
@@ -145,7 +146,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
                    if (!aReport->mIceCandidateStats.AppendElement(cand,
                                                                   fallible)) {
                      mozalloc_handle_oom(0);
-@@ -3492,28 +3485,6 @@
+@@ -3492,28 +3486,6 @@
      const std::string& ufrag) {
    STAMP_TIMECARD(mTimeCard, "Send Ice Candidate to content");
  
@@ -174,7 +175,17 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    // Check if IP spoofing is enabled
    if (ShouldSpoofCandidateIP()) {
      std::string spoofedCandidate = SpoofCandidateIP(candidate);
-@@ -3695,235 +3666,364 @@
+@@ -3623,7 +3595,8 @@
+ }
+ 
+ std::string PeerConnectionImpl::SpoofCandidateIP(const std::string& candidate) {
+-  if (!ShouldSpoofCandidateIP() || candidate.empty()) {
++  // The agent behind the proxy only names addresses the page may see.
++  if (!ShouldSpoofCandidateIP() || candidate.empty() || mFakeIceDriving) {
+     return candidate;
+   }
+ 
+@@ -3695,235 +3668,388 @@
  }
  
  // *****
@@ -260,6 +271,24 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +
 +uint32_t FakeIceJitter(uint32_t aMax) {
 +  return static_cast<uint32_t>(mozilla::RandomUint64OrDie() % (aMax + 1));
++}
++
++// Runs aStep on the main thread at aDeadline. A timer may fire up to an eighth
++// of its delay late to be bundled with others, so this waits in steps of at
++// most 500 ms, each toward the same deadline, to end where nICEr's timers do.
++void FakeIceRunAt(TimeStamp aDeadline, std::function<void()>&& aStep) {
++  const double remaining = (aDeadline - TimeStamp::Now()).ToMilliseconds();
++  if (remaining <= 0) {
++    aStep();
++    return;
++  }
++  const uint32_t wait = static_cast<uint32_t>(std::ceil(std::min(remaining, 500.0)));
++  GetMainThreadSerialEventTarget()->DelayedDispatch(
++      NS_NewRunnableFunction("PeerConnectionImpl::FakeIceRunAt",
++                             [aDeadline, step = std::move(aStep)]() mutable {
++                               FakeIceRunAt(aDeadline, std::move(step));
++                             }),
++      wait);
 +}
 +
 +enum class FakeServerOutcome { Answers, FailsAtOnce, FailsLookup, TimesOut };
@@ -408,6 +437,13 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 -                     static_cast<uint32_t>(mozilla::RandomUint64OrDie()));
 -      mFabricatedSrflxStatsId.AssignASCII(id);
 -    }
++void PeerConnectionImpl::EmitFakeCandidate(const std::string& aCandidate,
++                                           const std::string& aUfrag) {
++  mFakeIceDriving = true;
++  CandidateReady(aCandidate, mFakeIceTransportId, aUfrag);
++  mFakeIceDriving = false;
++}
++
 +void PeerConnectionImpl::StartFakeIce(const std::string& aTransportId) {
 +  mFakeIce = true;
 +  mFakeIceTransportId = aTransportId;
@@ -531,13 +567,8 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +    SprintfLiteral(id, "%x",
 +                   static_cast<uint32_t>(mozilla::RandomUint64OrDie()));
 +    return NS_ConvertASCIItoUTF16(id);
-   };
- 
--  // Mark surfaced now so re-entrant ICE-state changes during the delay below
--  // don't fabricate a second set.
--  if (wantHosts) {
--    mSurfacedHostCandidate = true;
--    mSurfacedHostUdpPort = port;
++  };
++
 +  RefPtr<PeerConnectionImpl> self(this);
 +  auto emitError = [self](const std::string& aUrl) {
 +    IceCandidateErrorInfo info;
@@ -545,17 +576,21 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +    info.mErrorCode = 701;
 +    self->OnCandidateError(info);
 +  };
-+  auto later = [self](uint32_t aDelayMs, std::function<void()>&& aStep) {
-+    GetMainThreadSerialEventTarget()->DelayedDispatch(
-+        NS_NewRunnableFunction("PeerConnectionImpl::FakeIceStep",
-+                               [self, step = std::move(aStep)]() {
-+                                 if (!self->IsClosed()) {
-+                                   step();
-+                                 }
-+                               }),
-+        aDelayMs);
-+  };
-+
++  const TimeStamp start = TimeStamp::Now();
++  auto later = [self, start](uint32_t aDelayMs, std::function<void()>&& aStep) {
++    FakeIceRunAt(start + TimeDuration::FromMilliseconds(aDelayMs),
++                 [self, step = std::move(aStep)]() {
++                   if (!self->IsClosed()) {
++                     step();
++                   }
++                 });
+   };
+ 
+-  // Mark surfaced now so re-entrant ICE-state changes during the delay below
+-  // don't fabricate a second set.
+-  if (wantHosts) {
+-    mSurfacedHostCandidate = true;
+-    mSurfacedHostUdpPort = port;
 +  // An ICMP error for a server on this machine arrives before gathering shows.
 +  for (const auto& server : servers) {
 +    if (server.mOutcome == FakeServerOutcome::FailsAtOnce) {
@@ -595,7 +630,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +                             kHostUdpPriority,
 +                             NS_ConvertASCIItoUTF16(hostUdpFoundation.c_str()),
 +                             false, ufrag16});
-+    CandidateReady(hostUdp.str(), transportId, ufrag);
++    EmitFakeCandidate(hostUdp.str(), ufrag);
  
      std::ostringstream hostTcp;
 -    hostTcp << "candidate:2 1 TCP " << kHostTcpPriority << " " << mdnsHost
@@ -612,7 +647,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +                             kHostTcpPriority,
 +                             NS_ConvertASCIItoUTF16(hostTcpFoundation.c_str()),
 +                             true, ufrag16});
-+    CandidateReady(hostTcp.str(), transportId, ufrag);
++    EmitFakeCandidate(hostTcp.str(), ufrag);
 +  }
 +
 +  if (srflxAt) {
@@ -627,14 +662,17 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +    later(*srflxAt, [self, srflx = srflx.str(), stat, publicIp, port,
 +                     transportId, ufrag]() {
 +      // The srflx becomes the default candidate, as in stock's SDP.
++      self->mFakeIceDriving = true;
 +      self->UpdateDefaultCandidate(publicIp, port, "", 0, transportId);
++      self->mFakeIceDriving = false;
 +      // getStats() lists it after the host UDP candidate, as nICEr does.
 +      auto& stats = self->mFakeIceStats;
 +      stats.insert(stats.begin() + std::min<size_t>(1, stats.size()), stat);
-+      self->CandidateReady(srflx, transportId, ufrag);
++      self->EmitFakeCandidate(srflx, ufrag);
 +    });
-+  }
-+
+   }
+ 
+-  if (!wantSrflx) {
 +  // Lookups and timeouts report their errors when they end; the last of them
 +  // ends gathering, which reports end-of-candidates and then complete.
 +  std::vector<std::string> errorsAtEnd;
@@ -649,21 +687,20 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +      later(server.mAtMs, [emitError, url = server.mUrl]() { emitError(url); });
 +    }
 +  }
-+  auto complete = [self, emitError, errorsAtEnd, transportId, ufrag]() {
++  auto complete = [self, emitError, errorsAtEnd, ufrag]() {
 +    for (const auto& url : errorsAtEnd) {
 +      emitError(url);
 +    }
-+    self->CandidateReady("", transportId, ufrag);
++    self->EmitFakeCandidate("", ufrag);
 +    self->DriveFakeGathering(dom::RTCIceGathererState::Complete);
 +  };
 +  if (endAt) {
 +    later(endAt, std::move(complete));
 +  } else {
 +    complete();
-   }
++  }
 +}
- 
--  if (!wantSrflx) {
++
 +void PeerConnectionImpl::StartFakeIceChecks() {
 +  // A renegotiation keeps the checks of the first negotiation.
 +  if (mFakeChecksStarted) {
@@ -706,34 +743,37 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    RefPtr<PeerConnectionImpl> self(this);
 -  std::string midCopy = mid;
 -  std::string ufragCopy = ufrag;
-   GetMainThreadSerialEventTarget()->DelayedDispatch(
-       NS_NewRunnableFunction(
+-  GetMainThreadSerialEventTarget()->DelayedDispatch(
+-      NS_NewRunnableFunction(
 -          "PeerConnectionImpl::EmitFabricatedSrflx",
 -          [self, srflxCand, midCopy, ufragCopy, injectIntoSdp]() {
 -            if (self->IsClosed() || !self->mPCObserver) {
-+          "PeerConnectionImpl::FakeIceFailure",
-+          [self, generation]() {
-+            if (self->IsClosed() || generation != self->mFakeFailGeneration ||
-+                self->mFakeIceState == dom::RTCIceTransportState::Failed) {
-               return;
-             }
+-              return;
+-            }
 -            injectIntoSdp(srflxCand);
 -            JSErrorResult rv2;
 -            self->mPCObserver->OnIceCandidate(
 -                0, ObString(midCopy.c_str()), ObString(srflxCand.c_str()),
 -                ObString(ufragCopy.c_str()), rv2);
-+            self->DriveFakeIceState(dom::RTCIceTransportState::Failed);
-+            // The transport is gone, and the data channels with it.
-+            if (self->mDataConnection) {
-+              self->mDataConnection->CloseAll();
-+            }
-           }),
+-          }),
 -      RandomSrflxDelayMs());
-+      aDelayMs);
++  FakeIceRunAt(
++      TimeStamp::Now() + TimeDuration::FromMilliseconds(aDelayMs),
++      [self, generation]() {
++        if (self->IsClosed() || generation != self->mFakeFailGeneration ||
++            self->mFakeIceState == dom::RTCIceTransportState::Failed) {
++          return;
++        }
++        self->DriveFakeIceState(dom::RTCIceTransportState::Failed);
++        // The transport is gone, and the data channels with it.
++        if (self->mDataConnection) {
++          self->mDataConnection->CloseAll();
++        }
++      });
  }
  
  // Implements the steps to "change the selected candidate pair and state".
-@@ -3942,6 +4042,20 @@
+@@ -3942,6 +4068,20 @@
      return;
    }
  
@@ -754,7 +794,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    CSFLogDebug(LOGTAG, "IceConnectionStateChange: %s %d (%p)",
                aTransportId.c_str(), static_cast<int>(domState), this);
  
-@@ -4053,47 +4167,6 @@
+@@ -4053,47 +4193,6 @@
    // 12. If connectionIceConnectionStateChanged is true, fire an event
    //     named iceconnectionstatechange at connection.
    if (connectionIceConnectionStateChanged) {
@@ -802,7 +842,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
      pcObserver->OnStateChange(PCObserverStateType::IceConnectionState, rv);
    }
  
-@@ -4241,6 +4314,10 @@
+@@ -4241,6 +4340,10 @@
      return;
    }
  
@@ -813,7 +853,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    CSFLogWarn(LOGTAG, "IceGatheringStateChange: %s %d (%p)",
               aTransportId.c_str(), static_cast<int>(state), this);
  
-@@ -4279,12 +4356,6 @@
+@@ -4279,12 +4382,6 @@
    // If connectionIceGatheringStateChanged is true, fire an event named
    // icegatheringstatechange at connection.
    if (gatheringStateChanged) {
@@ -826,7 +866,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
      // NOTE: If we're in the "complete" case, our JS code will fire a null
      // icecandidate event after firing the icegatheringstatechange event.
      // Fire an event named icecandidate using the RTCPeerConnectionIceEvent
-@@ -5168,6 +5239,11 @@
+@@ -5168,6 +5265,11 @@
      }
    }
  
@@ -838,7 +878,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    nsCOMPtr<nsIRunnable> runnable(
        WrapRunnable(mTransportHandler, &MediaTransportHandler::StartIceChecks,
                     aSession.IsIceControlling(), attributes));
-@@ -5211,6 +5287,10 @@
+@@ -5211,6 +5313,10 @@
    MOZ_ASSERT(NS_IsMainThread());
    MOZ_ASSERT(!aTransportId.empty());
  
@@ -852,7 +892,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.h b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
 --- a/dom/media/webrtc/jsapi/PeerConnectionImpl.h
 +++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
-@@ -616,11 +616,15 @@
+@@ -616,11 +616,17 @@
    bool ShouldSpoofCandidateIP() const;
    nsresult SanitizeSDPForIPLeak(std::string& sdp);
    std::string SpoofCandidateIP(const std::string& candidate);
@@ -870,10 +910,12 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.h b/dom/media/webrtc/jsap
 +  void ScheduleFakeIceFailure(uint32_t aDelayMs);
 +  void DriveFakeIceState(dom::RTCIceTransportState aState);
 +  void DriveFakeGathering(dom::RTCIceGathererState aState);
++  void EmitFakeCandidate(const std::string& aCandidate,
++                         const std::string& aUfrag);
    void SendLocalIceCandidateToContent(uint16_t level, const std::string& mid,
                                        const std::string& candidate,
                                        const std::string& ufrag);
-@@ -718,24 +722,28 @@
+@@ -718,24 +724,28 @@
    unsigned int mDataChannelsClosed = 0;
  
    bool mForceIceTcp;
