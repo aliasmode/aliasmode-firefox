@@ -1,65 +1,7 @@
 diff --git a/gfx/thebes/gfxPlatformFontList.cpp b/gfx/thebes/gfxPlatformFontList.cpp
 --- a/gfx/thebes/gfxPlatformFontList.cpp
 +++ b/gfx/thebes/gfxPlatformFontList.cpp
-@@ -861,9 +861,57 @@
-     }
-   }
- 
-+  // AliasMode: a persona's fonts from its font pack are in no OS font cache,
-+  // so each family's faces and character maps were loaded on first use, and a
-+  // page paid a synchronous round trip to this process per family (measured on
-+  // Windows with the macOS pack: 9 ms per font cold, 4.5 ms with the families
-+  // loaded). Load the persona's families here, in idle time after startup.
-+  if (XRE_IsParentProcess() && SharedFontList() &&
-+      MaskConfig::HasFontAllowlist() &&
-+      !MaskConfig::GetString("aliasmode:fontsDir").value_or("").empty()) {
-+    WarmPersonaFamilies(0);
-+  }
-+
-   return true;
- }
- 
-+void gfxPlatformFontList::WarmPersonaFamilies(size_t aStart) {
-+  NS_DispatchToMainThreadQueue(
-+      NS_NewRunnableFunction(
-+          "gfxPlatformFontList::WarmPersonaFamilies",
-+          [aStart] {
-+            gfxPlatformFontList* pfl = PlatformFontList(false);
-+            if (!pfl ||
-+                AppShutdown::IsInOrBeyond(ShutdownPhase::AppShutdownConfirmed)) {
-+              return;
-+            }
-+            AutoLock lock(pfl->mLock);
-+            fontlist::FontList* list = pfl->SharedFontList();
-+            if (!list) {
-+              return;
-+            }
-+            const auto& names = MaskConfig::FontAllowlist();
-+            const TimeStamp start = TimeStamp::Now();
-+            size_t i = aStart;
-+            while (i < names.size()) {
-+              nsAutoCString key(names[i].c_str());
-+              ++i;
-+              fontlist::Family* family = list->FindFamily(key);
-+              if (family && !family->IsFullyInitialized()) {
-+                (void)pfl->InitializeFamily(family, /* aLoadCmaps */ true);
-+              }
-+              // A few milliseconds at a time, so input never waits on it.
-+              if ((TimeStamp::Now() - start).ToMilliseconds() > 8) {
-+                break;
-+              }
-+            }
-+            if (i < names.size()) {
-+              pfl->WarmPersonaFamilies(i);
-+            }
-+          }),
-+      EventQueuePriority::Idle);
-+}
-+
- void gfxPlatformFontList::LoadIconFontOverrideList() {
-   mIconFontsSet.Clear();
-   AutoTArray<nsCString, 20> iconFontsList;
-@@ -928,6 +976,20 @@
+@@ -928,6 +928,20 @@
  }
  
  /* static */
@@ -80,7 +22,7 @@ diff --git a/gfx/thebes/gfxPlatformFontList.cpp b/gfx/thebes/gfxPlatformFontList
  already_AddRefed<nsIFile> gfxPlatformFontList::FontPackDir() {
    // The engine package carries no fonts of other OSes; the app keeps them in
    // its own data folder, which survives app updates, and passes the folder of
-@@ -1827,7 +1889,8 @@
+@@ -1827,7 +1841,8 @@
                                : FontVisibility::User;
  
    // Camoufox: content only ever resolves families from the spoofed font list.
@@ -93,7 +35,7 @@ diff --git a/gfx/thebes/gfxPlatformFontList.cpp b/gfx/thebes/gfxPlatformFontList
 diff --git a/gfx/thebes/gfxPlatformFontList.h b/gfx/thebes/gfxPlatformFontList.h
 --- a/gfx/thebes/gfxPlatformFontList.h
 +++ b/gfx/thebes/gfxPlatformFontList.h
-@@ -669,6 +669,18 @@
+@@ -669,6 +669,14 @@
        FontVisibilityProvider* aFontVisibilityProvider,
        const nsACString& aLowercaseFamily);
  
@@ -104,10 +46,6 @@ diff --git a/gfx/thebes/gfxPlatformFontList.h b/gfx/thebes/gfxPlatformFontList.h
 +  static bool HidesDotFamilyName(
 +      FontVisibilityProvider* aFontVisibilityProvider,
 +      const nsACString& aLowercaseFamily);
-+
-+  // Loads the faces and character maps of the persona's font families in idle
-+  // time, from the aStart'th name of its font list on.
-+  void WarmPersonaFamilies(size_t aStart);
 +
    static void FontWhitelistPrefChanged(const char* aPref, void* aClosure);
  

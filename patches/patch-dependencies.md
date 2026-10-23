@@ -49,7 +49,7 @@ be listed there.
 | `touchscreen-fingerprint-spoofing.patch` | `navigator.maxTouchPoints` |
 | `touchscreen-points-baseline.patch` | `navigator.maxTouchPoints` (collapsed as stock baseline protection does; needs `touchscreen-fingerprint-spoofing.patch`) |
 | `voice-spoofing.patch` | `voices:*` |
-| `web-font-lookups.patch` | `fonts`, `aliasmode:fontsDir` (hides dot-prefixed families from pages; loads a font pack persona's families in idle time after startup; needs `font-hijacker.patch`, `font-pack-dir.patch`) |
+| `web-font-lookups.patch` | (hides dot-prefixed families from pages; needs `font-hijacker.patch`) |
 | `webgl-spoofing.patch` | `webGl:*` |
 | `webgl-stated-limits.patch` | `webGl:parameters`, `webGl2:parameters` (read where the WebGL context runs, so a stated limit binds) |
 | `webgl-unmasked-renderer-and-readback.patch` | `webGl:renderer`, `aliasmode:canvasSeed` (applies after `webgl-spoofing.patch`; needs `canvas-readback-noise.patch`) |
