@@ -23,6 +23,7 @@ Written by daijro.
 #include <cstddef>
 #include <vector>
 #include <algorithm>
+#include <set>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -135,15 +136,23 @@ inline const std::vector<std::string>& FontAllowlist() {
 
 inline bool HasFontAllowlist() { return !FontAllowlist().empty(); }
 
+// The same list as a sorted set: font lookups and font fallback consult it for
+// every family they look at.
+inline const std::set<std::string, std::less<>>& FontAllowlistSet() {
+  static const std::set<std::string, std::less<>> fonts(
+      FontAllowlist().begin(), FontAllowlist().end());
+  return fonts;
+}
+
 /**
  * Whether a font family may be used. `family` must already be lowercased
  * (gfxPlatformFontList::GenerateFontListKey output is). Always true when no
  * allowlist is configured.
  */
 inline bool IsFontAllowed(std::string_view family) {
-  const auto& fonts = FontAllowlist();
+  const auto& fonts = FontAllowlistSet();
   if (fonts.empty()) return true;
-  return std::find(fonts.begin(), fonts.end(), family) != fonts.end();
+  return fonts.find(family) != fonts.end();
 }
 
 template <typename T>

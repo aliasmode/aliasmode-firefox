@@ -68,9 +68,12 @@ export function initialize(browsingContext, docShell) {
   const contextCrossProcessCookie = Services.cpmm.sharedData.get('juggler:context-cookie-' + browsingContext.originAttributes.userContextId) || { initScripts: [], bindings: [], settings: {} };
   const pageCrossProcessCookie = Services.cpmm.sharedData.get('juggler:page-cookie-' + browsingContext.browserId) || { initScripts: [], bindings: [], interceptFileChooserDialog: false };
 
-  // Enforce focused state for all top level documents.
-  docShell.overrideHasFocus = true;
-  docShell.forceActiveState = true;
+  // AliasMode: no focus or activity emulation. Playwright's
+  // docShell.overrideHasFocus made document.hasFocus() true and suppressed
+  // blur on every page at once, and forceActiveState kept background tabs
+  // visible and unthrottled; stock Firefox does neither (daijro/camoufox#855).
+  // Input commands still activate the page's tab and window first
+  // (PageTarget.activateAndRun), as a person's click or keystroke does.
   // A page reads this back: after a scripted same-origin `location.href = ...`
   // and `history.back()` -- no gesture, no permission -- stock Firefox 152.0.4
   // fires pageshow with persisted=true and does not re-run the document's
