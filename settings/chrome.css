@@ -11,13 +11,13 @@
   border-radius: 0px !important;
 }
 
-/* Disable tab dragging and use it for window movement */
+/*
+    The empty part of the tab strip moves the window. Tabs keep Firefox's own
+    no-drag: on Windows a drag region is title bar, so a click on a tab would
+    not select it and a double click would maximize or restore the window.
+*/
 #TabsToolbar {
   -moz-window-dragging: drag !important;
-}
-
-.tabbrowser-tab {
-  -moz-window-dragging: inherit !important;
 }
 
 .tab-content {
