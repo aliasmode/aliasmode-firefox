@@ -80,10 +80,14 @@ export class Juggler {
           return;
 
         this._silent = cmdLine.findFlag('silent', false) >= 0;
-        if (this._silent) {
+        // AliasMode: with this pref a persistent launch outlives its last
+        // window on Windows and Linux too, as Firefox does on macOS, so the app
+        // can save the profile before it stops the browser with Browser.close.
+        this._keepAlive = this._silent || Services.prefs.getBoolPref('aliasmode.keepAliveWithoutWindows', false);
+        if (this._keepAlive)
           Services.startup.enterLastWindowClosingSurvivalArea();
+        if (this._silent)
           browserStartupFinishedCallback();
-        }
         Services.obs.addObserver(this, "final-ui-startup");
         break;
       case "browser-idle-startup-tasks-finished":
@@ -138,7 +142,7 @@ export class Juggler {
         pipe.init(connection);
         const dispatcher = new Dispatcher(connection);
         browserHandler = new BrowserHandler(dispatcher.rootSession(), dispatcher, targetRegistry, browserStartupFinishedPromise, () => {
-          if (this._silent)
+          if (this._keepAlive)
             Services.startup.exitLastWindowClosingSurvivalArea();
           connection.onclose();
           pipe.stop();
