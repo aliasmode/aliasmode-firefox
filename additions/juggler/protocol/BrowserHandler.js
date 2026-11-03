@@ -193,6 +193,11 @@ export class BrowserHandler {
     this._targetRegistry.browserContextForId(browserContextId).requestInterceptionEnabled = enabled;
   }
 
+  // AliasMode: see NETWORK_DETAIL_PREF in NetworkObserver.js and content/FrameTree.js.
+  ['Browser.setNetworkDetail']({enabled}) {
+    Services.prefs.setBoolPref('juggler.networkDetail', enabled);
+  }
+
   ['Browser.setCacheDisabled']({browserContextId, cacheDisabled}) {
     this._targetRegistry.browserContextForId(browserContextId).setCacheDisabled(cacheDisabled);
   }

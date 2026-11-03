@@ -292,6 +292,12 @@ const Browser = {
       },
     },
     'clearCache': {},
+    // AliasMode: report WebSocket frames and keep response bodies (pref juggler.networkDetail).
+    'setNetworkDetail': {
+      params: {
+        enabled: t.Boolean,
+      },
+    },
     'setBrowserProxy': {
       params: {
         type: t.Enum(['http', 'https', 'socks', 'socks4']),

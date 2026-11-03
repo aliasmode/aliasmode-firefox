@@ -10,6 +10,7 @@ const Cu = Components.utils;
 const {Helper} = ChromeUtils.importESModule('resource://gre/modules/juggler/Helper.js');
 
 const helper = new Helper();
+const NETWORK_DETAIL_PREF = 'juggler.networkDetail';
 
 // Camoufox: Playwright's InitScript constructor wraps every body it is given:
 //
@@ -50,6 +51,15 @@ export class FrameTree {
     this._webSocketEventService = Cc[
       "@mozilla.org/websocketevent/service;1"
     ].getService(Ci.nsIWebSocketEventService);
+    // AliasMode: WebSocket frames are reported only while juggler.networkDetail is on (the app
+    // turns it on when a script or MCP client attaches). Each binary frame was base64-encoded on
+    // the page's main thread and sent through IPC and the pipe, which made WebSocket-heavy sites
+    // such as Telegram Web several times slower.
+    this._networkDetailObserver = () => {
+      for (const frame of this._frameIdToFrame.values())
+        frame._updateWebSocketListener();
+    };
+    Services.prefs.addObserver(NETWORK_DETAIL_PREF, this._networkDetailObserver);
 
     this._runtime = new Runtime(false /* isWorker */);
     this._workers = new Map();
@@ -256,6 +266,7 @@ export class FrameTree {
   }
 
   dispose() {
+    Services.prefs.removeObserver(NETWORK_DETAIL_PREF, this._networkDetailObserver);
     this._browsingContextGroup.__jugglerFrameTrees.delete(this);
     this._wdm.removeListener(this._wdmListener);
     this._runtime.dispose();
@@ -450,6 +461,7 @@ class Frame {
     this._initialNavigationDone = false;
 
     this._webSocketListenerInnerWindowId = 0;
+    this._webSocketListening = false;
     // WebSocketListener calls frameReceived event before webSocketOpened.
     // To avoid this, serialize event reporting.
     this._webSocketInfos = new Map();
@@ -484,6 +496,9 @@ class Frame {
           effectiveURL: effectiveURI,
         });
         const info = this._webSocketInfos.get(webSocketSerialID);
+        // A socket created before reporting started is not reported.
+        if (!info)
+          return;
         info.opened = true;
         for (const frame of info.pendingIncomingFrames)
           dispatchWebSocketFrameReceived(webSocketSerialID, frame);
@@ -515,6 +530,8 @@ class Frame {
         if (frame.opCode !== 1 && frame.opCode !== 2)
           return;
         const info = this._webSocketInfos.get(webSocketSerialID);
+        if (!info)
+          return;
         if (info.opened)
           dispatchWebSocketFrameReceived(webSocketSerialID, frame);
         else
@@ -524,6 +541,8 @@ class Frame {
       frameSent: (webSocketSerialID, frame) => {
         // Report only text and binary frames.
         if (frame.opCode !== 1 && frame.opCode !== 2)
+          return;
+        if (!this._webSocketInfos.has(webSocketSerialID))
           return;
         this._frameTree.emit(FrameTree.Events.WebSocketFrameSent, {
           frameId: this._frameId,
@@ -688,12 +707,36 @@ class Frame {
       executionContext.addBinding(name, script);
   }
 
+  _updateWebSocketListener() {
+    const webSocketService = this._frameTree._webSocketEventService;
+    const wanted = !!this._webSocketListenerInnerWindowId && Services.prefs.getBoolPref(NETWORK_DETAIL_PREF, true);
+    if (wanted === this._webSocketListening)
+      return;
+    if (wanted) {
+      webSocketService.addListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+    } else {
+      try {
+        webSocketService.removeListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+      } catch (e) {
+        // The window is gone, and its listener with it.
+      }
+      this._webSocketInfos.clear();
+    }
+    this._webSocketListening = wanted;
+  }
+
   _onGlobalObjectCleared() {
     const webSocketService = this._frameTree._webSocketEventService;
-    if (this._webSocketListenerInnerWindowId && webSocketService.hasListenerFor(this._webSocketListenerInnerWindowId))
-      webSocketService.removeListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+    if (this._webSocketListening) {
+      try {
+        webSocketService.removeListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+      } catch (e) {
+        // The window is gone, and its listener with it.
+      }
+      this._webSocketListening = false;
+    }
     this._webSocketListenerInnerWindowId = this.domWindow().windowGlobalChild.innerWindowId;
-    webSocketService.addListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+    this._updateWebSocketListener();
 
     for (const context of this._worldNameToContext.values())
       this._runtime.destroyExecutionContext(context);

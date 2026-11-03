@@ -25,6 +25,10 @@ const StorageStream = CC('@mozilla.org/storagestream;1', 'nsIStorageStream', 'in
 
 // Cap response storage with 100Mb per tracked tab.
 const MAX_RESPONSE_STORAGE_SIZE = 100 * 1024 * 1024;
+// AliasMode: response bodies are copied and kept only while this pref is on (the app turns it on
+// when a script or MCP client attaches). Copying every chunk on this process's main thread and
+// keeping up to 100 MB per page slowed page loads and grew memory with no reader.
+const NETWORK_DETAIL_PREF = 'juggler.networkDetail';
 
 const pageNetworkSymbol = Symbol('PageNetwork');
 
@@ -156,6 +160,7 @@ class NetworkRequest {
       appendExtraHTTPHeaders(httpChannel, this._pageNetwork.combinedExtraHTTPHeaders());
 
     this._responseBodyChunks = [];
+    this._keepResponseBody = Services.prefs.getBoolPref(NETWORK_DETAIL_PREF, true);
 
     httpChannel.QueryInterface(Ci.nsITraceableChannel);
     this._originalListener = httpChannel.setNewListener(this);
@@ -387,6 +392,15 @@ class NetworkRequest {
     // we do not get onResponse normally, but we do get nsIStreamListener notifications.
     this._sendOnResponse(false);
 
+    if (!this._keepResponseBody) {
+      try {
+        this._originalListener.onDataAvailable(aRequest, aInputStream, aOffset, aCount);
+      } catch (e) {
+        // Be ready to original listener exceptions.
+      }
+      return;
+    }
+
     const iStream = new BinaryInputStream(aInputStream);
     const sStream = new StorageStream(8192, aCount, null);
     const oStream = new BinaryOutputStream(sStream.getOutputStream(0));
@@ -437,7 +451,7 @@ class NetworkRequest {
       this._sendOnResponse(false);
       const body = this._responseBodyChunks.join('');
       const pageNetwork = this._pageNetwork;
-      if (pageNetwork)
+      if (pageNetwork && this._keepResponseBody)
         pageNetwork._responseStorage.addResponseBody(this, body);
       this._sendOnRequestFinished();
     } else {
