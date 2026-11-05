@@ -15,7 +15,7 @@ diff --git a/dom/canvas/AliasModeReadbackNoise.h b/dom/canvas/AliasModeReadbackN
 new file mode 100644
 --- /dev/null
 +++ b/dom/canvas/AliasModeReadbackNoise.h
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,237 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -71,10 +71,11 @@ new file mode 100644
 +  return seed;
 +}
 +
-+// Where the profile's bands start: 1, 2 or 3 past a multiple of four, never 0,
-+// so no band lines up with a power-of-two bucket. Red, green and blue share
-+// it, so a grey pixel's channels share a band and can share a step.
-+inline uint32_t BandOffset() { return 1 + uint32_t(Seed() % 3); }
++// Where the profile's bands start: 2 or 3 past a multiple of four, so no band
++// lines up with a power-of-two bucket, and the band of 0 holds two or three
++// values (black on a transparent canvas). Red, green and blue share it, so a
++// grey pixel's channels share a band and can share a step.
++inline uint32_t BandOffset() { return 2 + uint32_t(Seed() % 2); }
 +
 +// The band of a channel value: 0 for the values below the first band start.
 +inline uint32_t Band(uint32_t aValue, uint32_t aOffset) {
