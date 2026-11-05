@@ -15,7 +15,7 @@ diff --git a/dom/canvas/AliasModeReadbackNoise.h b/dom/canvas/AliasModeReadbackN
 new file mode 100644
 --- /dev/null
 +++ b/dom/canvas/AliasModeReadbackNoise.h
-@@ -0,0 +1,232 @@
+@@ -0,0 +1,236 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -49,6 +49,8 @@ new file mode 100644
 +//   edges, lines, blends and gradients, where rasterizers and GPUs differ
 +//   between machines. Flat fills, the edges and corners of flat shapes,
 +//   cleared pixels and images under 16 pixels on a side read back as drawn.
++// - A grey pixel moves all three channels by the same step and stays grey:
++//   greyscale anti-aliasing is grey on every machine.
 +namespace mozilla::readback_noise {
 +
 +inline uint64_t Mix(uint64_t aValue) {
@@ -69,11 +71,10 @@ new file mode 100644
 +  return seed;
 +}
 +
-+// Where the profile's bands of red, green and blue start: 1, 2 or 3 past a
-+// multiple of four, never 0, so no band lines up with a power-of-two bucket.
-+inline uint32_t BandOffset(int aChannel) {
-+  return 1 + uint32_t((Seed() >> (8 * aChannel)) % 3);
-+}
++// Where the profile's bands start: 1, 2 or 3 past a multiple of four, never 0,
++// so no band lines up with a power-of-two bucket. Red, green and blue share
++// it, so a grey pixel's channels share a band and can share a step.
++inline uint32_t BandOffset() { return 1 + uint32_t(Seed() % 3); }
 +
 +// The band of a channel value: 0 for the values below the first band start.
 +inline uint32_t Band(uint32_t aValue, uint32_t aOffset) {
@@ -109,7 +110,7 @@ new file mode 100644
 +  int32_t width;
 +  int32_t height;
 +  Layout layout;
-+  uint32_t offsets[3] = {BandOffset(0), BandOffset(1), BandOffset(2)};
++  uint32_t offset = BandOffset();
 +
 +  const uint8_t* At(int32_t aX, int32_t aY) const {
 +    return origin + aY * stride + ptrdiff_t(aX) * 4;
@@ -122,9 +123,8 @@ new file mode 100644
 +      return 0;
 +    }
 +    const uint8_t* p = At(aX, aY);
-+    return Band(p[layout.r], offsets[0]) << 24 |
-+           Band(p[layout.g], offsets[1]) << 16 |
-+           Band(p[layout.b], offsets[2]) << 8 | Alpha(p, layout);
++    return Band(p[layout.r], offset) << 24 | Band(p[layout.g], offset) << 16 |
++           Band(p[layout.b], offset) << 8 | Alpha(p, layout);
 +  }
 +};
 +
@@ -181,14 +181,18 @@ new file mode 100644
 +  return uint8_t(low + int32_t(aPick % uint32_t(high - low + 1)));
 +}
 +
-+inline void SetBits(uint8_t* aPixel, const Layout& aLayout,
-+                    const uint32_t* aOffsets, int32_t aBits,
-+                    bool aPremultiplied) {
++// A grey pixel takes red's pick on every channel. A coloured pixel that comes
++// out grey still reads back unchanged: red's pick gave every channel its value.
++inline void SetBits(uint8_t* aPixel, const Layout& aLayout, uint32_t aOffset,
++                    int32_t aBits, bool aPremultiplied) {
 +  const uint32_t cap = aPremultiplied ? Alpha(aPixel, aLayout) : 0xFF;
 +  const int8_t channels[3] = {aLayout.r, aLayout.g, aLayout.b};
++  const bool grey = aPixel[aLayout.r] == aPixel[aLayout.g] &&
++                    aPixel[aLayout.g] == aPixel[aLayout.b];
 +  for (int c = 0; c < 3; ++c) {
 +    uint8_t& value = aPixel[channels[c]];
-+    value = Step(value, aOffsets[c], uint32_t(aBits >> (2 * c)) & 3, cap);
++    value = Step(value, aOffset, uint32_t(aBits >> (grey ? 0 : 2 * c)) & 3,
++                 cap);
 +  }
 +}
 +
@@ -228,7 +232,7 @@ new file mode 100644
 +    for (int32_t x = 0; x < aWidth; ++x) {
 +      const int32_t bits = Bits(above, current, below, size_t(x) + 1, seed);
 +      if (bits >= 0) {
-+        SetBits(dest + ptrdiff_t(x) * 4, aDestLayout, aSource.offsets, bits,
++        SetBits(dest + ptrdiff_t(x) * 4, aDestLayout, aSource.offset, bits,
 +                aPremultiplied);
 +      }
 +    }
@@ -259,27 +263,34 @@ diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderin
  #include "CanvasImageCache.h"
  #include "CanvasUtils.h"
  #include "GeckoBindings.h"
-@@ -1348,6 +1349,7 @@
+@@ -1348,6 +1349,8 @@
    bool forceReset = true;
    ReturnTarget(forceReset);
    mTarget = nullptr;
 +  mRasterized = false;
++  mPutRegion.SetEmpty();
    if (aFreeBuffer) {
      mBufferProvider = nullptr;
    } else if (mBufferProvider) {
-@@ -2289,6 +2291,11 @@
+@@ -2289,6 +2292,17 @@
          PrincipalOrNull(), ret.get(), out_imageSize->width,
          out_imageSize->height,
          out_imageSize->width * out_imageSize->height * 4);
 +    if (mRasterized) {
-+      readback_noise::Apply(ret.get(), out_imageSize->width * 4,
-+                            out_imageSize->width, out_imageSize->height,
-+                            readback_noise::kBGRA, true);
++      const int32_t stride = out_imageSize->width * 4;
++      std::vector<uint8_t> drawn;
++      if (!mPutRegion.IsEmpty()) {
++        drawn.assign(ret.get(), ret.get() + stride * out_imageSize->height);
++      }
++      readback_noise::Apply(ret.get(), stride, out_imageSize->width,
++                            out_imageSize->height, readback_noise::kBGRA, true);
++      KeepPutPixels(drawn.data(), stride, ret.get(), stride,
++                    IntRect(IntPoint(), *out_imageSize));
 +    }
      if (aExtractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
        nsRFPService::RandomizePixels(
            GetCookieJarSettings(), PrincipalOrNull(), ret.get(),
-@@ -3421,6 +3428,14 @@
+@@ -3421,6 +3435,14 @@
      bounds = mTarget->GetTransform().TransformBounds(fillRect);
    }
  
@@ -288,53 +299,78 @@ diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderin
 +      !mTarget->GetTransform().IsIntegerTranslation() ||
 +      aX != std::floor(aX) || aY != std::floor(aY) ||
 +      aW != std::floor(aW) || aH != std::floor(aH)) {
-+    mRasterized = true;
++    MarkRasterized();
 +  }
 +
    AntialiasMode antialiasMode = CurrentState().imageSmoothingEnabled
                                      ? AntialiasMode::DEFAULT
                                      : AntialiasMode::NONE;
-@@ -3451,6 +3466,7 @@
+@@ -3451,6 +3473,7 @@
    if (!IsTargetValid()) {
      return;
    }
-+  mRasterized = true;
++  MarkRasterized();
  
    const bool needBounds = NeedToCalculateBounds();
    if (!IsTargetValid()) {
-@@ -3566,6 +3582,7 @@
+@@ -3566,6 +3589,7 @@
    target.Fill(&aPath,
                CanvasGeneralPattern().ForStyle(this, Style::FILL, mTarget),
                DrawOptions(CurrentState().globalAlpha, op));
-+  mRasterized = true;
++  MarkRasterized();
    Redraw();
  }
  
-@@ -3628,6 +3645,7 @@
+@@ -3628,6 +3652,7 @@
    target.Stroke(&aPath,
                  CanvasGeneralPattern().ForStyle(this, Style::STROKE, mTarget),
                  strokeOptions, DrawOptions(CurrentState().globalAlpha, op));
-+  mRasterized = true;
++  MarkRasterized();
    Redraw();
  }
  
-@@ -5406,6 +5424,7 @@
+@@ -5406,6 +5431,7 @@
    if (restoreTransform) {
      mTarget->SetTransform(oldTransform);
    }
-+  mRasterized = true;
++  MarkRasterized();
  
    if (aOp == CanvasRenderingContext2D::TextDrawOperation::FILL &&
        !doCalculateBounds) {
-@@ -6273,6 +6292,7 @@
+@@ -6273,6 +6299,7 @@
      DrawDirectlyToCanvas(drawInfo, &bounds, gfx::Rect(aDx, aDy, aDw, aDh),
                           gfx::Rect(aSx, aSy, aSw, aSh), imgSize);
    }
-+  mRasterized = true;
++  MarkRasterized();
  
    RedrawUser(gfxRect(aDx, aDy, aDw, aDh));
  }
-@@ -6793,6 +6813,27 @@
+@@ -6681,6 +6708,24 @@
+   return aSrc + aDestOffset;
+ }
+ 
++void CanvasRenderingContext2D::KeepPutPixels(const uint8_t* aDrawn,
++                                             ptrdiff_t aDrawnStride,
++                                             uint8_t* aNoisy,
++                                             ptrdiff_t aNoisyStride,
++                                             const IntRect& aRect) const {
++  IntRegion put = mPutRegion;
++  put.AndWith(aRect);
++  for (auto iter = put.RectIter(); !iter.Done(); iter.Next()) {
++    const IntRect& rect = iter.Get();
++    for (int32_t y = rect.y; y < rect.YMost(); ++y) {
++      const ptrdiff_t row = y - aRect.y;
++      const ptrdiff_t column = ptrdiff_t(rect.x - aRect.x) * 4;
++      memcpy(aNoisy + row * aNoisyStride + column,
++             aDrawn + row * aDrawnStride + column, size_t(rect.width) * 4);
++    }
++  }
++}
++
+ nsresult CanvasRenderingContext2D::GetImageDataArray(
+     JSContext* aCx, int32_t aX, int32_t aY, uint32_t aWidth, uint32_t aHeight,
+     nsIPrincipal& aSubjectPrincipal, JSObject** aRetval) {
+@@ -6793,6 +6838,29 @@
      uint8_t* src =
          rawData.mData + srcReadRect.y * srcStride + srcReadRect.x * 4;
  
@@ -355,6 +391,8 @@ diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderin
 +                                size.height, layout},
 +          srcReadRect.x, srcReadRect.y, noisy.data(), ptrdiff_t(rowBytes),
 +          srcReadRect.width, srcReadRect.height, layout, true);
++      KeepPutPixels(src, srcStride, noisy.data(), ptrdiff_t(rowBytes),
++                    srcReadRect);
 +      src = noisy.data();
 +      srcStride = uint32_t(rowBytes);
 +    }
@@ -362,10 +400,26 @@ diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderin
      uint8_t* dst = data + dstWriteRect.y * (aWidth * 4) + dstWriteRect.x * 4;
  
      if (mOpaque) {
+@@ -6993,6 +7061,7 @@
+     mTarget->CopySurface(sourceSurface, dirtyRect - dirtyRect.TopLeft(),
+                          dirtyRect.TopLeft());
+   }
++  mPutRegion.OrWith(dirtyRect);
+ 
+   Redraw(
+       gfx::Rect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height));
 diff --git a/dom/canvas/CanvasRenderingContext2D.h b/dom/canvas/CanvasRenderingContext2D.h
 --- a/dom/canvas/CanvasRenderingContext2D.h
 +++ b/dom/canvas/CanvasRenderingContext2D.h
-@@ -922,6 +922,11 @@
+@@ -29,6 +29,7 @@
+ #include "nsICanvasRenderingContextInternal.h"
+ #include "nsIFrame.h"
+ #include "nsRFPService.h"
++#include "nsRegion.h"
+ 
+ class gfxFontGroup;
+ class nsGlobalWindowInner;
+@@ -922,6 +923,23 @@
    bool mIsContextLost = false;
    // Whether or not we can restore the context after restoration.
    bool mAllowContextRestore = true;
@@ -374,6 +428,18 @@ diff --git a/dom/canvas/CanvasRenderingContext2D.h b/dom/canvas/CanvasRenderingC
 +  // on every machine, so a canvas holding only those reads back as drawn
 +  // (AliasModeReadbackNoise.h).
 +  bool mRasterized = false;
++  // The pixels putImageData wrote since the last drawing. They read back as
++  // written, as stock does, until text, a path or an image is drawn again.
++  gfx::IntRegion mPutRegion;
++  void MarkRasterized() {
++    mRasterized = true;
++    mPutRegion.SetEmpty();
++  }
++  // Copies the pixels of mPutRegion inside aRect of the canvas from aDrawn to
++  // aNoisy, both of which start at aRect's top-left pixel.
++  void KeepPutPixels(const uint8_t* aDrawn, ptrdiff_t aDrawnStride,
++                     uint8_t* aNoisy, ptrdiff_t aNoisyStride,
++                     const gfx::IntRect& aRect) const;
    // Which context properties apply to an SVG when calling drawImage.
    CanvasContextProperties mContextProperties = CanvasContextProperties::None;
  

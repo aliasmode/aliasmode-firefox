@@ -228,6 +228,8 @@ rules:
       - "156.0.1-beta.36 r4, three profiles on one machine with one graphics identity: getImageData, OffscreenCanvas, WebGL readPixels and every text width identical across profiles"
       - "stock 156 keys only the encoded toDataURL/toBlob bytes per session (EfficientCanvasRandomization), never pixels or widths"
       - "r5 kept the step to the lowest bit, so a hash of WebGL pixels rounded to 16 was still identical across five profiles"
+      - "r12 stepped red, green and blue in bands of their own, so greyscale text on a transparent canvas read back with 641 coloured pixels; stock Windows Firefox 156 and 159 read 0"
+      - "r12 noised a palette written with putImageData after a drawing, so getImageData of that palette differed from it in about 9,100 bytes; stock reads it back as written"
     rationale: >-
       Profiles that share a machine share its GPU, rasterizer and fonts, so the
       values two rules above leave alone link them to each other.
@@ -236,13 +238,15 @@ rules:
       the profile and the pixel's neighbourhood only, not on the call or the
       position, so repeated reads, sub-rectangles, copies and all read paths
       agree, a read written back reads back unchanged, and flat fills, the
-      edges of flat shapes and tiny probe canvases read back exactly. A value
-      moves inside a band of four whose position is the profile's own, so no
-      fixed rounding of the values hides the step. The text step is one app
-      unit on a fixed half of each font's advance widths, so widths keep stock
-      quantization, glyphs of one width keep one width, marks and
-      pixel-snapped advances are untouched, and canvas, layout and SVG measure
-      the same text alike.
+      edges of flat shapes and tiny probe canvases read back exactly, and so do
+      pixels putImageData wrote since the last drawing. A value moves inside a
+      band of four whose position is the profile's own, so no fixed rounding
+      of the values hides the step; red, green and blue share that position,
+      and a grey pixel takes one step on all three, so greyscale stays grey.
+      The text step is one app unit on a fixed half of each font's advance
+      widths, so widths keep stock quantization, glyphs of one width keep one
+      width, marks and pixel-snapped advances are untouched, and canvas,
+      layout and SVG measure the same text alike.
 
   - id: canvas-fingerprint-is-hashed-not-truncated
     title: The canvas check hashes pixels, not a prefix of the data URL
