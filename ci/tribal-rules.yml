@@ -230,6 +230,7 @@ rules:
       - "r5 kept the step to the lowest bit, so a hash of WebGL pixels rounded to 16 was still identical across five profiles"
       - "r12 stepped red, green and blue in bands of their own, so greyscale text on a transparent canvas read back with 641 coloured pixels; stock Windows Firefox 156 and 159 read 0"
       - "r12 noised a palette written with putImageData after a drawing, so getImageData of that palette differed from it in about 9,100 bytes; stock reads it back as written"
+      - "one band position shared by red, green and blue, 2 or 3 past a multiple of four, left two classes of profile: rounding values to the bands gave two profiles on one machine the same hash half the time, against one in 27 with a position per channel"
     rationale: >-
       Profiles that share a machine share its GPU, rasterizer and fonts, so the
       values two rules above leave alone link them to each other.
@@ -240,9 +241,12 @@ rules:
       agree, a read written back reads back unchanged, and flat fills, the
       edges of flat shapes and tiny probe canvases read back exactly, and so do
       pixels putImageData wrote since the last drawing. A value moves inside a
-      band of four whose position is the profile's own, so no fixed rounding
-      of the values hides the step; red, green and blue share that position,
-      and a grey pixel takes one step on all three, so greyscale stays grey.
+      band whose position is the profile's own, so no fixed rounding of the
+      values hides the step. Red, green and blue of a coloured pixel have bands
+      of four with a position each. A grey pixel's channels share one band and
+      one step, so greyscale stays grey; its bands start 1, 2 or 3 past each
+      multiple of four, drawn per band, so they differ between profiles in many
+      places, and 0 shares its band with 1 or 2 so black text moves too.
       The text step is one app unit on a fixed half of each font's advance
       widths, so widths keep stock quantization, glyphs of one width keep one
       width, marks and pixel-snapped advances are untouched, and canvas,

@@ -15,7 +15,7 @@ diff --git a/dom/canvas/AliasModeReadbackNoise.h b/dom/canvas/AliasModeReadbackN
 new file mode 100644
 --- /dev/null
 +++ b/dom/canvas/AliasModeReadbackNoise.h
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,293 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33,24 +33,27 @@ new file mode 100644
 +//
 +// Profiles on one machine share a GPU, a rasterizer and fonts, so without this
 +// they read back identical pixels. With a seed, each colour channel of an
-+// eligible pixel falls in a band of four values whose position is the
-+// profile's own, and reads back as the band member drawn from the seed and
-+// the pixel's 3x3 neighbourhood of bands:
++// eligible pixel falls in a band of values whose position is the profile's
++// own, and reads back as the band member drawn from the seed and the pixel's
++// 3x3 neighbourhood of bands:
 +//
 +// - The answer depends on content only, never on position or on the call, so
 +//   every read path, every sub-rectangle and every pixel-aligned copy of the
 +//   same pixels agrees, and a profile reads the same bytes on every launch.
 +// - Reading, writing back and reading again changes nothing: a value never
 +//   leaves its band, and the bands are the key.
-+// - A channel moves by at most 3, but no fixed rounding of the values hides
-+//   the move: the bands straddle the boundaries of every power-of-two bucket.
++// - A channel moves by at most 3 (5 in a grey pixel), but no fixed rounding
++//   of the values hides the move: the bands straddle the boundaries of every
++//   power-of-two bucket.
 +// - Only pixels at least half opaque that differ from all four direct
 +//   neighbours, or sit among three or more values, are eligible: anti-aliased
 +//   edges, lines, blends and gradients, where rasterizers and GPUs differ
 +//   between machines. Flat fills, the edges and corners of flat shapes,
 +//   cleared pixels and images under 16 pixels on a side read back as drawn.
-+// - A grey pixel moves all three channels by the same step and stays grey:
-+//   greyscale anti-aliasing is grey on every machine.
++// - Red, green and blue of a coloured pixel have bands of four of their own.
++//   A grey pixel stays grey: its channels share a band of the profile's grey
++//   bands and one step, as greyscale anti-aliasing is grey on every machine.
++//   A coloured pixel stays coloured.
 +namespace mozilla::readback_noise {
 +
 +inline uint64_t Mix(uint64_t aValue) {
@@ -71,15 +74,42 @@ new file mode 100644
 +  return seed;
 +}
 +
-+// Where the profile's bands start: 2 or 3 past a multiple of four, so no band
-+// lines up with a power-of-two bucket, and the band of 0 holds two or three
-+// values (black on a transparent canvas). Red, green and blue share it, so a
-+// grey pixel's channels share a band and can share a step.
-+inline uint32_t BandOffset() { return 2 + uint32_t(Seed() % 2); }
++// Where the profile's bands of red, green and blue start: 1, 2 or 3 past a
++// multiple of four, never 0, so no band lines up with a power-of-two bucket.
++inline uint32_t BandOffset(int aChannel) {
++  return 1 + uint32_t((Seed() >> (8 * aChannel)) % 3);
++}
 +
 +// The band of a channel value: 0 for the values below the first band start.
 +inline uint32_t Band(uint32_t aValue, uint32_t aOffset) {
 +  return (aValue + 4 - aOffset) >> 2;
++}
++
++// The bands of grey values. The k-th band starts 1, 2 or 3 past 4k, drawn from
++// the seed for each k, so the bands hold 2 to 6 values, straddle every
++// power-of-two bucket and differ between profiles in many places. The band of
++// 0 holds 2 or 3 values, so black on a transparent canvas moves too.
++struct GreyBands {
++  uint8_t band[256];
++  uint16_t start[66];  // band b holds start[b] to start[b + 1] - 1
++};
++
++inline const GreyBands& Grey() {
++  static const GreyBands grey = [] {
++    GreyBands bands{};
++    for (uint32_t k = 0; k < 64; ++k) {
++      const uint64_t pick = Mix(Seed() + (k + 1) * 0x9e3779b97f4a7c15ull);
++      bands.start[k + 1] = uint16_t(4 * k + (k ? 1 + pick % 3 : 2 + pick % 2));
++    }
++    bands.start[65] = 256;
++    for (uint32_t b = 0; b < 65; ++b) {
++      for (uint32_t v = bands.start[b]; v < bands.start[b + 1]; ++v) {
++        bands.band[v] = uint8_t(b);
++      }
++    }
++    return bands;
++  }();
++  return grey;
 +}
 +
 +// Images smaller than this on either side read back as drawn: tiny probe
@@ -103,6 +133,11 @@ new file mode 100644
 +  return aLayout.a < 0 ? 0xFF : aPixel[aLayout.a];
 +}
 +
++inline bool IsGrey(const uint8_t* aPixel, const Layout& aLayout) {
++  return aPixel[aLayout.r] == aPixel[aLayout.g] &&
++         aPixel[aLayout.g] == aPixel[aLayout.b];
++}
++
 +// Pixels as the page sees them: `origin` is the top-left pixel and rows are
 +// `stride` bytes apart (negative for the bottom-up rows of a GL readback).
 +struct Image {
@@ -111,7 +146,7 @@ new file mode 100644
 +  int32_t width;
 +  int32_t height;
 +  Layout layout;
-+  uint32_t offset = BandOffset();
++  uint32_t offsets[3] = {BandOffset(0), BandOffset(1), BandOffset(2)};
 +
 +  const uint8_t* At(int32_t aX, int32_t aY) const {
 +    return origin + aY * stride + ptrdiff_t(aX) * 4;
@@ -124,13 +159,19 @@ new file mode 100644
 +      return 0;
 +    }
 +    const uint8_t* p = At(aX, aY);
-+    return Band(p[layout.r], offset) << 24 | Band(p[layout.g], offset) << 16 |
-+           Band(p[layout.b], offset) << 8 | Alpha(p, layout);
++    if (IsGrey(p, layout)) {
++      const uint32_t band = Grey().band[p[layout.r]];
++      return band << 24 | band << 16 | band << 8 | Alpha(p, layout);
++    }
++    return Band(p[layout.r], offsets[0]) << 24 |
++           Band(p[layout.g], offsets[1]) << 16 |
++           Band(p[layout.b], offsets[2]) << 8 | Alpha(p, layout);
 +  }
 +};
 +
-+// Two bits each for red, green and blue (bits 0-1, 2-3, 4-5) for the pixel at
-+// column aI of aRow, between aAbove and aBelow, or -1 to keep it as drawn.
++// Six bits for the pixel at column aI of aRow, between aAbove and aBelow, or
++// -1 to keep it as drawn: two each for red, green and blue (bits 0-1, 2-3,
++// 4-5) of a coloured pixel, all six for a grey one.
 +inline int32_t Bits(const uint32_t* aAbove, const uint32_t* aRow,
 +                    const uint32_t* aBelow, size_t aI, uint64_t aSeed) {
 +  const uint32_t around[9] = {aAbove[aI - 1], aAbove[aI], aAbove[aI + 1],
@@ -168,32 +209,47 @@ new file mode 100644
 +  return int32_t(Mix(hash) >> 58);
 +}
 +
-+// Moves one channel to the member of its band that aPick (0-3) selects. A
-+// premultiplied colour never exceeds its alpha; one that already does is kept.
-+inline uint8_t Step(uint32_t aValue, uint32_t aOffset, uint32_t aPick,
-+                    uint32_t aCap) {
++// Moves one channel to the member of its band, aFirst to aLast, that aPick
++// selects. A premultiplied colour never exceeds its alpha; one that already
++// does is kept.
++inline uint8_t Step(uint32_t aValue, int32_t aFirst, int32_t aLast,
++                    uint32_t aPick, uint32_t aCap) {
 +  if (aValue > aCap) {
 +    return uint8_t(aValue);
 +  }
-+  const int32_t start =
-+      int32_t(Band(aValue, aOffset)) * 4 - 4 + int32_t(aOffset);
-+  const int32_t low = start < 0 ? 0 : start;
-+  const int32_t high = start + 3 > int32_t(aCap) ? int32_t(aCap) : start + 3;
++  const int32_t low = aFirst < 0 ? 0 : aFirst;
++  const int32_t high = aLast > int32_t(aCap) ? int32_t(aCap) : aLast;
 +  return uint8_t(low + int32_t(aPick % uint32_t(high - low + 1)));
 +}
 +
-+// A grey pixel takes red's pick on every channel. A coloured pixel that comes
-+// out grey still reads back unchanged: red's pick gave every channel its value.
-+inline void SetBits(uint8_t* aPixel, const Layout& aLayout, uint32_t aOffset,
-+                    int32_t aBits, bool aPremultiplied) {
++// A coloured pixel whose steps would make it grey keeps its colour, so it
++// reads back by its own bands again.
++inline void SetBits(uint8_t* aPixel, const Layout& aLayout,
++                    const uint32_t* aOffsets, int32_t aBits,
++                    bool aPremultiplied) {
 +  const uint32_t cap = aPremultiplied ? Alpha(aPixel, aLayout) : 0xFF;
 +  const int8_t channels[3] = {aLayout.r, aLayout.g, aLayout.b};
-+  const bool grey = aPixel[aLayout.r] == aPixel[aLayout.g] &&
-+                    aPixel[aLayout.g] == aPixel[aLayout.b];
++  uint8_t values[3];
++  if (IsGrey(aPixel, aLayout)) {
++    const GreyBands& grey = Grey();
++    const uint32_t band = grey.band[aPixel[aLayout.r]];
++    values[0] = values[1] = values[2] =
++        Step(aPixel[aLayout.r], grey.start[band], grey.start[band + 1] - 1,
++             uint32_t(aBits), cap);
++  } else {
++    for (int c = 0; c < 3; ++c) {
++      const uint32_t value = aPixel[channels[c]];
++      const int32_t first =
++          int32_t(Band(value, aOffsets[c])) * 4 - 4 + int32_t(aOffsets[c]);
++      values[c] = Step(value, first, first + 3,
++                       uint32_t(aBits >> (2 * c)) & 3, cap);
++    }
++    if (values[0] == values[1] && values[1] == values[2]) {
++      return;
++    }
++  }
 +  for (int c = 0; c < 3; ++c) {
-+    uint8_t& value = aPixel[channels[c]];
-+    value = Step(value, aOffset, uint32_t(aBits >> (grey ? 0 : 2 * c)) & 3,
-+                 cap);
++    aPixel[channels[c]] = values[c];
 +  }
 +}
 +
@@ -233,7 +289,7 @@ new file mode 100644
 +    for (int32_t x = 0; x < aWidth; ++x) {
 +      const int32_t bits = Bits(above, current, below, size_t(x) + 1, seed);
 +      if (bits >= 0) {
-+        SetBits(dest + ptrdiff_t(x) * 4, aDestLayout, aSource.offset, bits,
++        SetBits(dest + ptrdiff_t(x) * 4, aDestLayout, aSource.offsets, bits,
 +                aPremultiplied);
 +      }
 +    }
