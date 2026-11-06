@@ -26,6 +26,7 @@ be listed there.
 | `audio-fingerprint-manager.patch` | `audio:seed` |
 | `audio-noise-on-copy.patch` | `audio:seed` (noises a copy of the AnalyserNode frequency data; needs `audio-fingerprint-manager.patch`) |
 | `canvas-readback-noise.patch` | `aliasmode:canvasSeed` (adds `dom/canvas/AliasModeReadbackNoise.h`) |
+| `stable-browsing-session-key.patch` | `aliasmode:canvasSeed` (the fingerprinting randomization session key, which keys the toDataURL `deBG` chunk) |
 | `chromeutil.patch` | `debug` |
 | `fingerprint-injection.patch` | `navigator.*`, `screen.*`, `window.*` |
 | `font-hijacker.patch` | `navigator.platform` |

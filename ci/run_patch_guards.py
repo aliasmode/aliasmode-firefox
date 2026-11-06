@@ -38,6 +38,7 @@ GUARD_DIR = REPO_ROOT / "tests" / "patches"
 GROUPS: Dict[str, Tuple[str, ...]] = {
     "spoofing": (
         "animation-timing",
+        "canvas-encode-key-stable",
         "fingerprint-setter-seal",
         "locale-explicit-names",
         "media-devices-coherence",
