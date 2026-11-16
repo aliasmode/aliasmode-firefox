@@ -8,12 +8,12 @@
 // NOTE: since these have to exist in both Worker and main threads, and we do
 // not know a way to load ES Modules in worker threads, we have to use the loadSubScript
 // utility instead.
-Services.scriptloader.loadSubScript('chrome://juggler/content/SimpleChannel.js');
-Services.scriptloader.loadSubScript('chrome://juggler/content/content/Runtime.js');
+Services.scriptloader.loadSubScript('resource://gre/modules/juggler/SimpleChannel.js');
+Services.scriptloader.loadSubScript('resource://gre/modules/juggler/content/Runtime.js');
 
-const {Helper} = ChromeUtils.importESModule('chrome://juggler/content/Helper.js');
-const {FrameTree} = ChromeUtils.importESModule('chrome://juggler/content/content/FrameTree.js');
-const {PageAgent} = ChromeUtils.importESModule('chrome://juggler/content/content/PageAgent.js');
+const {Helper} = ChromeUtils.importESModule('resource://gre/modules/juggler/Helper.js');
+const {FrameTree} = ChromeUtils.importESModule('resource://gre/modules/juggler/content/FrameTree.js');
+const {PageAgent} = ChromeUtils.importESModule('resource://gre/modules/juggler/content/PageAgent.js');
 
 const helper = new Helper();
 
@@ -68,9 +68,24 @@ export function initialize(browsingContext, docShell) {
   const contextCrossProcessCookie = Services.cpmm.sharedData.get('juggler:context-cookie-' + browsingContext.originAttributes.userContextId) || { initScripts: [], bindings: [], settings: {} };
   const pageCrossProcessCookie = Services.cpmm.sharedData.get('juggler:page-cookie-' + browsingContext.browserId) || { initScripts: [], bindings: [], interceptFileChooserDialog: false };
 
-  // Enforce focused state for all top level documents.
-  docShell.overrideHasFocus = true;
-  docShell.forceActiveState = true;
+  // AliasMode: no focus or activity emulation. Playwright's
+  // docShell.overrideHasFocus made document.hasFocus() true and suppressed
+  // blur on every page at once, and forceActiveState kept background tabs
+  // visible and unthrottled; stock Firefox does neither (daijro/camoufox#855).
+  // Input commands still activate the page's tab and window first
+  // (PageTarget.activateAndRun), as a person's click or keystroke does.
+  // A page reads this back: after a scripted same-origin `location.href = ...`
+  // and `history.back()` -- no gesture, no permission -- stock Firefox 152.0.4
+  // fires pageshow with persisted=true and does not re-run the document's
+  // scripts, while camoufox fires persisted=false and rebuilds the document.
+  // It stays set anyway, because juggler cannot yet report a bfcache restore:
+  // with it removed (measured 2026-09-18) the document IS cached
+  // (SHIPBFCache logs `OnPageHide persisted=1`), but the restore emits no
+  // navigation, no lifecycle event and no execution context, so `page.go_back()`
+  // times out waiting for "load" and the next `page.evaluate` throws "The
+  // operation is insecure" against the stale context. Closing this needs
+  // FrameTree/PageAgent to treat a persisted pageshow as a navigation.
+  // See leak-sweep/LEAKS.md row 106 and leak-sweep/tools/bfcache-probe.py.
   docShell.disallowBFCache = true;
   data.frameTree = new FrameTree(browsingContext);
   for (const [name, value] of Object.entries(contextCrossProcessCookie.settings)) {

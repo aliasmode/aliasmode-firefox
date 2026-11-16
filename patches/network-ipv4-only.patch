@@ -1,0 +1,136 @@
+diff --git a/netwerk/base/nsSocketTransport2.cpp b/netwerk/base/nsSocketTransport2.cpp
+--- a/netwerk/base/nsSocketTransport2.cpp
++++ b/netwerk/base/nsSocketTransport2.cpp
+@@ -1622,7 +1622,13 @@
+   }
+ #endif
+ 
+-  status = PR_Connect(fd, &prAddr, NS_SOCKET_CONNECT_TIMEOUT);
++  // Camoufox: fail as the kernel of a host with no IPv6 route does.
++  if (mNetAddr.IsUnreachableOnIPv4OnlyNetwork()) {
++    PR_SetError(PR_NETWORK_UNREACHABLE_ERROR, 0);
++    status = PR_FAILURE;
++  } else {
++    status = PR_Connect(fd, &prAddr, NS_SOCKET_CONNECT_TIMEOUT);
++  }
+   PRErrorCode code = PR_GetError();
+   if (status == PR_SUCCESS) {
+     PR_SetFDInheritable(fd, false);
+diff --git a/netwerk/dns/DNS.cpp b/netwerk/dns/DNS.cpp
+--- a/netwerk/dns/DNS.cpp
++++ b/netwerk/dns/DNS.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "mozilla/net/DNS.h"
+ 
++#include "MaskConfig.hpp"
++
+ #include <string.h>
+ 
+ #include "mozilla/Assertions.h"
+@@ -378,6 +380,16 @@
+   return false;
+ }
+ 
++bool NetAddr::IsUnreachableOnIPv4OnlyNetwork() const {
++  if (raw.family != AF_INET6 || !MaskConfig::CheckBool("network:ipv4Only")) {
++    return false;
++  }
++  // Loopback, the any address, IPv4-mapped and link-local (fe80::/10)
++  // addresses need no IPv6 route, so they work on an IPv4-only network too.
++  return !IsIPAddrAny() && !IsLoopbackAddr() && !IsIPAddrV4Mapped() &&
++         (ntohs(inet6.ip.u16[0]) & 0xffc0) != 0xfe80;
++}
++
+ nsresult NetAddr::GetPort(uint16_t* aResult) const {
+   uint16_t port;
+   if (this->raw.family == PR_AF_INET) {
+diff --git a/netwerk/dns/DNS.h b/netwerk/dns/DNS.h
+--- a/netwerk/dns/DNS.h
++++ b/netwerk/dns/DNS.h
+@@ -151,6 +151,9 @@
+   bool IsIPAddrV4Mapped() const;
+   bool IsIPAddrLocal() const;
+   bool IsIPAddrShared() const;
++  // Camoufox: whether a host on an IPv4-only network has no route to this
++  // address. True only when the network:ipv4Only config key is set.
++  bool IsUnreachableOnIPv4OnlyNetwork() const;
+   nsresult GetPort(uint16_t* aResult) const;
+   bool ToStringBuffer(char* buf, uint32_t bufSize) const;
+   bool ToString(nsACString& aOutput) const;
+diff --git a/netwerk/dns/moz.build b/netwerk/dns/moz.build
+--- a/netwerk/dns/moz.build
++++ b/netwerk/dns/moz.build
+@@ -107,6 +107,7 @@
+ 
+ # need to include etld_data.inc
+ LOCAL_INCLUDES += [
++    "/camoucfg",
+     "/netwerk/base",
+     "/netwerk/ipc",
+     "/netwerk/protocol/http",
+diff --git a/netwerk/dns/nsDNSService2.cpp b/netwerk/dns/nsDNSService2.cpp
+--- a/netwerk/dns/nsDNSService2.cpp
++++ b/netwerk/dns/nsDNSService2.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "nsDNSService2.h"
+ 
++#include "MaskConfig.hpp"
++
+ #include "DNSAdditionalInfo.h"
+ #include "TRRService.h"
+ #include "mozilla/ClearOnShutdown.h"
+@@ -1391,7 +1393,8 @@
+ uint16_t nsDNSService::GetAFForLookup(const nsACString& host,
+                                       nsIDNSService::DNSFlags flags) {
+   if (StaticPrefs::network_dns_disableIPv6() ||
+-      (flags & RESOLVE_DISABLE_IPV6)) {
++      (flags & RESOLVE_DISABLE_IPV6) ||
++      MaskConfig::CheckBool("network:ipv4Only")) {
+     return PR_AF_INET;
+   }
+ 
+diff --git a/netwerk/protocol/http/HttpConnectionUDP.cpp b/netwerk/protocol/http/HttpConnectionUDP.cpp
+--- a/netwerk/protocol/http/HttpConnectionUDP.cpp
++++ b/netwerk/protocol/http/HttpConnectionUDP.cpp
+@@ -280,6 +280,11 @@
+                                        const NetAddr& aPeerAddr,
+                                        nsIInterfaceRequestor* callbacks,
+                                        uint32_t caps, bool isInTunnel) {
++  // Camoufox: a host with no IPv6 route cannot reach an IPv6 peer over QUIC.
++  if (aPeerAddr.IsUnreachableOnIPv4OnlyNetwork()) {
++    return NS_ERROR_CONNECTION_REFUSED;
++  }
++
+   mSocket = aSocket;
+ 
+   if (mConnInfo && mConnInfo->GetIsTrrServiceChannel()) {
+diff --git a/dom/media/webrtc/transport/nricectx.cpp b/dom/media/webrtc/transport/nricectx.cpp
+--- a/dom/media/webrtc/transport/nricectx.cpp
++++ b/dom/media/webrtc/transport/nricectx.cpp
+@@ -75,6 +75,7 @@
+ 
+ // Local includes
+ #include "mozilla/Base64.h"
++#include "mozilla/net/DNS.h"
+ #include "nr_socket_prsock.h"
+ #include "nricectx.h"
+ #include "nricemediastream.h"
+@@ -679,6 +680,16 @@
+     MOZ_MTLOG(ML_INFO, "Error finding local stun addresses");
+   } else {
+     for (int i = 0; i < addr_ct; ++i) {
++      // Camoufox: a host on an IPv4-only network has no routable IPv6
++      // address to gather candidates from.
++      char ip[INET6_ADDRSTRLEN];
++      net::NetAddr netAddr;
++      if (!nr_transport_addr_get_addrstring(&local_addrs[i].addr, ip,
++                                            sizeof(ip)) &&
++          NS_SUCCEEDED(netAddr.InitFromString(nsDependentCString(ip))) &&
++          netAddr.IsUnreachableOnIPv4OnlyNetwork()) {
++        continue;
++      }
+       NrIceStunAddr addr(&local_addrs[i]);
+       addrs.AppendElement(addr);
+     }

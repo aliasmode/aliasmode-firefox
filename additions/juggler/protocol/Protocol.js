@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const {t} = ChromeUtils.importESModule('chrome://juggler/content/protocol/PrimitiveTypes.js');
+const {t} = ChromeUtils.importESModule('resource://gre/modules/juggler/protocol/PrimitiveTypes.js');
 
 // Protocol-specific types.
 const browserTypes = {};
@@ -292,6 +292,12 @@ const Browser = {
       },
     },
     'clearCache': {},
+    // AliasMode: report WebSocket frames and keep response bodies (pref juggler.networkDetail).
+    'setNetworkDetail': {
+      params: {
+        enabled: t.Boolean,
+      },
+    },
     'setBrowserProxy': {
       params: {
         type: t.Enum(['http', 'https', 'socks', 'socks4']),

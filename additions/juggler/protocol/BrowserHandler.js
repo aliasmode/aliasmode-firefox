@@ -6,9 +6,9 @@
 
 const {AddonManager} = ChromeUtils.importESModule("resource://gre/modules/AddonManager.sys.mjs");
 const {XPIProvider} = ChromeUtils.importESModule("resource://gre/modules/addons/XPIProvider.sys.mjs");
-const {TargetRegistry} = ChromeUtils.importESModule("chrome://juggler/content/TargetRegistry.js");
-const {Helper} = ChromeUtils.importESModule('chrome://juggler/content/Helper.js');
-const {PageHandler} = ChromeUtils.importESModule("chrome://juggler/content/protocol/PageHandler.js");
+const {TargetRegistry} = ChromeUtils.importESModule("resource://gre/modules/juggler/TargetRegistry.js");
+const {Helper} = ChromeUtils.importESModule('resource://gre/modules/juggler/Helper.js');
+const {PageHandler} = ChromeUtils.importESModule("resource://gre/modules/juggler/protocol/PageHandler.js");
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
 
 const helper = new Helper();
@@ -191,6 +191,11 @@ export class BrowserHandler {
 
   ['Browser.setRequestInterception']({browserContextId, enabled}) {
     this._targetRegistry.browserContextForId(browserContextId).requestInterceptionEnabled = enabled;
+  }
+
+  // AliasMode: see NETWORK_DETAIL_PREF in NetworkObserver.js and content/FrameTree.js.
+  ['Browser.setNetworkDetail']({enabled}) {
+    Services.prefs.setBoolPref('juggler.networkDetail', enabled);
   }
 
   ['Browser.setCacheDisabled']({browserContextId, cacheDisabled}) {

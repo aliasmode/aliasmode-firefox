@@ -1,0 +1,29 @@
+name: Browser branding
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [firefox-browser-ui]
+    paths:
+      - .github/workflows/browser-branding.yml
+      - additions/browser/branding/camoufox/**
+      - scripts/generate-assets-car.sh
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile native browser artwork
+        run: |
+          xcrun --find actool
+          iconutil --convert iconset --output "$RUNNER_TEMP/firefox.iconset" additions/browser/branding/camoufox/firefox.icns
+          bash scripts/generate-assets-car.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AliasModeFirefoxBranding
+          path: additions/browser/branding/camoufox/Assets.car
+          if-no-files-found: error

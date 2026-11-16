@@ -1,0 +1,71 @@
+diff --git a/gfx/thebes/gfxPlatformFontList.cpp b/gfx/thebes/gfxPlatformFontList.cpp
+--- a/gfx/thebes/gfxPlatformFontList.cpp
++++ b/gfx/thebes/gfxPlatformFontList.cpp
+@@ -928,6 +928,20 @@
+ }
+ 
+ /* static */
++bool gfxPlatformFontList::HidesDotFamilyName(
++    FontVisibilityProvider* aFontVisibilityProvider,
++    const nsACString& aLowercaseFamily) {
++#ifdef XP_MACOSX
++  // Core Text already leaves them out, and the system font is looked up by
++  // its own path.
++  return false;
++#else
++  return aFontVisibilityProvider && !aFontVisibilityProvider->IsChrome() &&
++         StringBeginsWith(aLowercaseFamily, "."_ns);
++#endif
++}
++
++/* static */
+ already_AddRefed<nsIFile> gfxPlatformFontList::FontPackDir() {
+   // The engine package carries no fonts of other OSes; the app keeps them in
+   // its own data folder, which survives app updates, and passes the folder of
+@@ -1827,7 +1841,8 @@
+                               : FontVisibility::User;
+ 
+   // Camoufox: content only ever resolves families from the spoofed font list.
+-  if (MaskedFontListBlocks(aFontVisibilityProvider, key)) {
++  if (MaskedFontListBlocks(aFontVisibilityProvider, key) ||
++      HidesDotFamilyName(aFontVisibilityProvider, key)) {
+     return false;
+   }
+ 
+diff --git a/gfx/thebes/gfxPlatformFontList.h b/gfx/thebes/gfxPlatformFontList.h
+--- a/gfx/thebes/gfxPlatformFontList.h
++++ b/gfx/thebes/gfxPlatformFontList.h
+@@ -669,6 +669,14 @@
+       FontVisibilityProvider* aFontVisibilityProvider,
+       const nsACString& aLowercaseFamily);
+ 
++  // Whether a page names a dot-prefixed family (.SF NS, .Lucida Grande UI).
++  // macOS keeps those system faces out of its font list, so stock Firefox
++  // never matches them by name; on other hosts they come with the macOS font
++  // pack as ordinary families.
++  static bool HidesDotFamilyName(
++      FontVisibilityProvider* aFontVisibilityProvider,
++      const nsACString& aLowercaseFamily);
++
+   static void FontWhitelistPrefChanged(const char* aPref, void* aClosure);
+ 
+   bool AddWithLegacyFamilyName(const nsACString& aLegacyName,
+diff --git a/gfx/thebes/gfxUserFontSet.cpp b/gfx/thebes/gfxUserFontSet.cpp
+--- a/gfx/thebes/gfxUserFontSet.cpp
++++ b/gfx/thebes/gfxUserFontSet.cpp
+@@ -491,6 +491,15 @@
+             fe = nullptr;
+           }
+         }
++        // Nor does a face of a dot-prefixed family load by local() name.
++        if (fe) {
++          nsAutoCString familyKey(fe->FamilyName());
++          ToLowerCase(familyKey);
++          if (gfxPlatformFontList::HidesDotFamilyName(
++                  fontSet->GetFontVisibilityProvider(), familyKey)) {
++            fe = nullptr;
++          }
++        }
+         // Note that we've attempted a local lookup, even if it failed,
+         // as this means we are dependent on any updates to the font list.
+         mSeenLocalSource = true;

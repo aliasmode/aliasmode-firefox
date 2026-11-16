@@ -2,19 +2,26 @@ name: Build and Release
 
 on:
   workflow_dispatch:
+    inputs:
+      targets:
+        description: 'Targets to build, as a JSON list such as [{"target":"macos","arch":"arm64"}]'
+        required: false
+        default: '[{"target":"windows","arch":"x86_64"}]'
   push:
     branches:
       - firefox-engine
       - firefox-runtime-macos-linux
     tags:
       - "*"
+      - "!aliasmode-runtime-*"
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
-        include: ${{ github.ref == 'refs/heads/firefox-runtime-macos-linux' && fromJSON('[{"target":"linux","arch":"x86_64"},{"target":"macos","arch":"arm64"}]') || (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/firefox-engine') && fromJSON('[{"target":"windows","arch":"x86_64"}]') || fromJSON('[{"target":"linux","arch":"x86_64"},{"target":"linux","arch":"arm64"},{"target":"windows","arch":"x86_64"},{"target":"windows","arch":"i686"},{"target":"macos","arch":"x86_64"},{"target":"macos","arch":"arm64"}]') }}
+        include: ${{ github.event_name == 'workflow_dispatch' && fromJSON(inputs.targets) || github.ref == 'refs/heads/firefox-runtime-macos-linux' && fromJSON('[{"target":"linux","arch":"x86_64"},{"target":"macos","arch":"arm64"}]') || github.ref == 'refs/heads/firefox-engine' && fromJSON('[{"target":"windows","arch":"x86_64"}]') || fromJSON('[{"target":"linux","arch":"x86_64"},{"target":"linux","arch":"arm64"},{"target":"windows","arch":"x86_64"},{"target":"windows","arch":"i686"},{"target":"macos","arch":"x86_64"},{"target":"macos","arch":"arm64"}]') }}
 
     steps:
       - name: Maximize build space
@@ -115,8 +122,27 @@ jobs:
           name: AliasModeBuilds-${{ matrix.target }}-${{ matrix.arch }}
           path: dist/*
 
+  font-packs:
+    # One zip of fonts per OS family (scripts/package-font-packs.py). The engine
+    # packages carry none; the app downloads the pack a profile needs.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Build font packs
+        run: make font-packs
+
+      - name: Upload font packs
+        uses: actions/upload-artifact@v4
+        with:
+          name: AliasModeFontPacks
+          path: dist/*
+          compression-level: 0
+
   release:
-    needs: build
+    needs: [build, font-packs]
     permissions:
       contents: write
     runs-on: ubuntu-latest

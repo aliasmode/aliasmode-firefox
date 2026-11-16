@@ -1,0 +1,139 @@
+diff --git a/gfx/thebes/CoreTextFontList.cpp b/gfx/thebes/CoreTextFontList.cpp
+--- a/gfx/thebes/CoreTextFontList.cpp
++++ b/gfx/thebes/CoreTextFontList.cpp
+@@ -2015,5 +2015,13 @@
+     return;
+   }
+   ActivateFontsFromDir(path, &mBundledFamilies);
++  // AliasMode: then the font pack of the identity's OS (aliasmode:fontsDir).
++  // The caller already skips a native identity.
++  if (nsCOMPtr<nsIFile> pack = FontPackDir()) {
++    nsAutoCString packPath;
++    if (NS_SUCCEEDED(pack->GetNativePath(packPath))) {
++      ActivateFontsFromDir(packPath, &mBundledFamilies);
++    }
++  }
+ }
+ #endif
+diff --git a/gfx/thebes/gfxDWriteFontList.cpp b/gfx/thebes/gfxDWriteFontList.cpp
+--- a/gfx/thebes/gfxDWriteFontList.cpp
++++ b/gfx/thebes/gfxDWriteFontList.cpp
+@@ -2632,6 +2632,8 @@
+   nsCOMPtr<nsISupports> mCurrent;
+   // Camoufox: see the constructor.
+   bool mStockFilesOnly = false;
++  // AliasMode: the font pack, enumerated after fonts/ (aliasmode:fontsDir).
++  nsCOMPtr<nsIFile> mPackDir;
+ };
+ 
+ // Camoufox: the fonts/ directory holds Firefox's own bundled font AND the font
+@@ -2657,6 +2659,11 @@
+           MaskConfig::GetString("navigator.platform").value_or("") ==
+           "Win32") {
+   mFontDir->GetDirectoryEntries(getter_AddRefs(mEntries));
++  // AliasMode: a native identity keeps the real system fonts, so only an
++  // identity of another OS reads the font pack.
++  if (!mStockFilesOnly) {
++    mPackDir = gfxPlatformFontList::FontPackDir();
++  }
+ }
+ 
+ IFACEMETHODIMP
+@@ -2665,7 +2672,13 @@
+   while (mEntries) {
+     hasMore = false;
+     if (NS_FAILED(mEntries->HasMoreElements(&hasMore)) || !hasMore) {
+-      break;
++      // AliasMode: fonts/ is done; continue with the font pack, once.
++      hasMore = false;
++      mEntries = nullptr;
++      if (nsCOMPtr<nsIFile> pack = mPackDir.forget()) {
++        pack->GetDirectoryEntries(getter_AddRefs(mEntries));
++      }
++      continue;
+     }
+     if (NS_FAILED(mEntries->GetNext(getter_AddRefs(mCurrent)))) {
+       hasMore = false;
+diff --git a/gfx/thebes/gfxFcPlatformFontList.cpp b/gfx/thebes/gfxFcPlatformFontList.cpp
+--- a/gfx/thebes/gfxFcPlatformFontList.cpp
++++ b/gfx/thebes/gfxFcPlatformFontList.cpp
+@@ -3084,6 +3084,13 @@
+   if (!mBundledFontsPath.IsEmpty()) {
+     FcConfigAppFontAddDir(nullptr, ToFcChar8Ptr(mBundledFontsPath.get()));
+   }
++  // AliasMode: then the font pack of the identity's OS (aliasmode:fontsDir).
++  if (nsCOMPtr<nsIFile> pack = FontPackDir()) {
++    nsAutoCString packPath;
++    if (NS_SUCCEEDED(pack->GetNativePath(packPath))) {
++      FcConfigAppFontAddDir(nullptr, ToFcChar8Ptr(packPath.get()));
++    }
++  }
+ }
+ #endif
+ 
+diff --git a/gfx/thebes/gfxPlatformFontList.cpp b/gfx/thebes/gfxPlatformFontList.cpp
+--- a/gfx/thebes/gfxPlatformFontList.cpp
++++ b/gfx/thebes/gfxPlatformFontList.cpp
+@@ -38,10 +38,12 @@
+ #include "mozilla/ipc/FileDescriptorUtils.h"
+ #include "nsCRT.h"
+ #include "nsGkAtoms.h"
++#include "nsIFile.h"
+ #include "nsPresContext.h"
+ #include "nsServiceManagerUtils.h"
+ #include "nsUnicharUtils.h"
+ #include "nsUnicodeProperties.h"
++#include "nsXPCOM.h"
+ #include "nsXULAppAPI.h"
+ 
+ #ifdef XP_MACOSX
+@@ -923,6 +925,25 @@
+              aLowercaseFamily.BeginReading(), aLowercaseFamily.Length()));
+ }
+ 
++/* static */
++already_AddRefed<nsIFile> gfxPlatformFontList::FontPackDir() {
++  // The engine package carries no fonts of other OSes; the app keeps them in
++  // its own data folder, which survives app updates, and passes the folder of
++  // the identity's OS here.
++  auto path = MaskConfig::GetString("aliasmode:fontsDir");
++  if (!path || path->empty()) {
++    return nullptr;
++  }
++  nsCOMPtr<nsIFile> dir;
++  bool isDir = false;
++  if (NS_FAILED(NS_NewUTF8LocalFile(nsDependentCString(path->c_str()),
++                                    getter_AddRefs(dir))) ||
++      NS_FAILED(dir->IsDirectory(&isDir)) || !isDir) {
++    return nullptr;
++  }
++  return dir.forget();
++}
++
+ // Used if a stylo thread wants to trigger InitOtherFamilyNames in the main
+ // process: we can't do IPC from the stylo thread so we post this to the main
+ // thread instead.
+diff --git a/gfx/thebes/gfxPlatformFontList.h b/gfx/thebes/gfxPlatformFontList.h
+--- a/gfx/thebes/gfxPlatformFontList.h
++++ b/gfx/thebes/gfxPlatformFontList.h
+@@ -33,6 +33,7 @@
+ }
+ }  // namespace mozilla
+ class FontVisibilityProvider;
++class nsIFile;
+ 
+ // Lookup key for the shared-cmap hashtable. The hash is carried separately
+ // from the gfxCharacterMap pointer so that MaybeRemoveCmap can look up an
+@@ -289,6 +290,12 @@
+ 
+   static bool Initialize(gfxPlatformFontList* aList);
+ 
++  // AliasMode: the directory named by the aliasmode:fontsDir config key, or
++  // null when it is unset or is not a directory. It holds the font pack the
++  // app downloaded for an identity of another OS, and is activated together
++  // with the bundled fonts/ directory (see font-pack-dir.patch).
++  static already_AddRefed<nsIFile> FontPackDir();
++
+   static void Shutdown() {
+     // Ensure any font-list initialization thread is finished before we delete
+     // the platform fontlist singleton, which that thread may try to use.

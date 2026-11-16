@@ -7,9 +7,10 @@ const Ci = Components.interfaces;
 const Cr = Components.results;
 const Cu = Components.utils;
 
-const {Helper} = ChromeUtils.importESModule('chrome://juggler/content/Helper.js');
+const {Helper} = ChromeUtils.importESModule('resource://gre/modules/juggler/Helper.js');
 
 const helper = new Helper();
+const NETWORK_DETAIL_PREF = 'juggler.networkDetail';
 
 // Camoufox: Playwright's InitScript constructor wraps every body it is given:
 //
@@ -50,6 +51,15 @@ export class FrameTree {
     this._webSocketEventService = Cc[
       "@mozilla.org/websocketevent/service;1"
     ].getService(Ci.nsIWebSocketEventService);
+    // AliasMode: WebSocket frames are reported only while juggler.networkDetail is on (the app
+    // turns it on when a script or MCP client attaches). Each binary frame was base64-encoded on
+    // the page's main thread and sent through IPC and the pipe, which made WebSocket-heavy sites
+    // such as Telegram Web several times slower.
+    this._networkDetailObserver = () => {
+      for (const frame of this._frameIdToFrame.values())
+        frame._updateWebSocketListener();
+    };
+    Services.prefs.addObserver(NETWORK_DETAIL_PREF, this._networkDetailObserver);
 
     this._runtime = new Runtime(false /* isWorker */);
     this._workers = new Map();
@@ -68,7 +78,7 @@ export class FrameTree {
       Ci.nsISupportsWeakReference,
     ]);
 
-    this._wdm = Cc["@mozilla.org/dom/workers/workerdebuggermanager;1"].createInstance(Ci.nsIWorkerDebuggerManager);
+    this._wdm = Cc["@mozilla.org/dom/workers/workerdebuggermanager;1"].getService(Ci.nsIWorkerDebuggerManager);
     this._wdmListener = {
       QueryInterface: ChromeUtils.generateQI([Ci.nsIWorkerDebuggerManagerListener]),
       onRegister: this._onWorkerCreated.bind(this),
@@ -256,6 +266,7 @@ export class FrameTree {
   }
 
   dispose() {
+    Services.prefs.removeObserver(NETWORK_DETAIL_PREF, this._networkDetailObserver);
     this._browsingContextGroup.__jugglerFrameTrees.delete(this);
     this._wdm.removeListener(this._wdmListener);
     this._runtime.dispose();
@@ -450,6 +461,7 @@ class Frame {
     this._initialNavigationDone = false;
 
     this._webSocketListenerInnerWindowId = 0;
+    this._webSocketListening = false;
     // WebSocketListener calls frameReceived event before webSocketOpened.
     // To avoid this, serialize event reporting.
     this._webSocketInfos = new Map();
@@ -484,6 +496,9 @@ class Frame {
           effectiveURL: effectiveURI,
         });
         const info = this._webSocketInfos.get(webSocketSerialID);
+        // A socket created before reporting started is not reported.
+        if (!info)
+          return;
         info.opened = true;
         for (const frame of info.pendingIncomingFrames)
           dispatchWebSocketFrameReceived(webSocketSerialID, frame);
@@ -515,6 +530,8 @@ class Frame {
         if (frame.opCode !== 1 && frame.opCode !== 2)
           return;
         const info = this._webSocketInfos.get(webSocketSerialID);
+        if (!info)
+          return;
         if (info.opened)
           dispatchWebSocketFrameReceived(webSocketSerialID, frame);
         else
@@ -524,6 +541,8 @@ class Frame {
       frameSent: (webSocketSerialID, frame) => {
         // Report only text and binary frames.
         if (frame.opCode !== 1 && frame.opCode !== 2)
+          return;
+        if (!this._webSocketInfos.has(webSocketSerialID))
           return;
         this._frameTree.emit(FrameTree.Events.WebSocketFrameSent, {
           frameId: this._frameId,
@@ -654,6 +673,30 @@ class Frame {
     for (const context of this._worldNameToContext.values())
       this._runtime.destroyExecutionContext(context);
     this._worldNameToContext.clear();
+
+    // Camoufox: release the master sandbox with the frame.
+    //
+    // This method came from upstream, which has no such field, so when
+    // _masterSandbox was added only the navigation path (_onGlobalObjectCleared)
+    // learned to drop it. A frame that is *destroyed* rather than navigated --
+    // an iframe removed from the DOM, which is what an ad stack does
+    // continuously -- kept it.
+    //
+    // It matters more than an ordinary stale reference: the sandbox is built
+    // over `sandboxPrototype: domWindow` with a system principal, so while it
+    // is alive it holds the window's global, and with it the whole document.
+    // Nuking severs the cross-compartment wrappers so the compartment can
+    // actually go away; dropping the reference alone leaves that to the cycle
+    // collector's goodwill.
+    if (this._masterSandbox) {
+      try {
+        Cu.nukeSandbox(this._masterSandbox);
+      } catch (e) {
+        // Already nuked, or the compartment is gone. Either way the reference
+        // below is what matters, and a throw here would abort frame teardown.
+      }
+      this._masterSandbox = null;
+    }
   }
 
   _addBinding(worldName, name, script) {
@@ -664,12 +707,36 @@ class Frame {
       executionContext.addBinding(name, script);
   }
 
+  _updateWebSocketListener() {
+    const webSocketService = this._frameTree._webSocketEventService;
+    const wanted = !!this._webSocketListenerInnerWindowId && Services.prefs.getBoolPref(NETWORK_DETAIL_PREF, true);
+    if (wanted === this._webSocketListening)
+      return;
+    if (wanted) {
+      webSocketService.addListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+    } else {
+      try {
+        webSocketService.removeListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+      } catch (e) {
+        // The window is gone, and its listener with it.
+      }
+      this._webSocketInfos.clear();
+    }
+    this._webSocketListening = wanted;
+  }
+
   _onGlobalObjectCleared() {
     const webSocketService = this._frameTree._webSocketEventService;
-    if (this._webSocketListenerInnerWindowId && webSocketService.hasListenerFor(this._webSocketListenerInnerWindowId))
-      webSocketService.removeListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+    if (this._webSocketListening) {
+      try {
+        webSocketService.removeListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+      } catch (e) {
+        // The window is gone, and its listener with it.
+      }
+      this._webSocketListening = false;
+    }
     this._webSocketListenerInnerWindowId = this.domWindow().windowGlobalChild.innerWindowId;
-    webSocketService.addListener(this._webSocketListenerInnerWindowId, this._webSocketListener);
+    this._updateWebSocketListener();
 
     for (const context of this._worldNameToContext.values())
       this._runtime.destroyExecutionContext(context);
@@ -692,6 +759,12 @@ class Frame {
     // global means state written by evaluate() on one page is still there on
     // the next -- every other world starts empty per document.
     this._masterSandbox = null;
+    // Camoufox: open the window.setXxx() fingerprint setters for the init
+    // scripts below. A window is created sealed, so this is the only moment
+    // they exist -- see nsGlobalWindowInner::CamouSettersSealed.
+    const camouInnerWindowId = this.domWindow().windowGlobalChild.innerWindowId;
+    ChromeUtils.camouUnsealFingerprintSetters(camouInnerWindowId);
+
     this._createIsolatedContext('', true);
     for (const [name, world] of this._frameTree._isolatedWorlds) {
       if (name)
@@ -703,6 +776,19 @@ class Frame {
       for (const script of world._scriptsToEvaluateOnNewDocument)
         this._evaluateInitScript(executionContext, script);
     }
+
+    // Close them again. The init scripts have had their turn and page script
+    // has not run yet, so this is the last moment at which nobody untrusted has
+    // been able to look.
+    //
+    // Trusting each setter to remove itself when called only ever covered the
+    // setters a given fingerprint happened to set. A value the config left
+    // alone (no timezone, no IPv6) left its setter sitting on window, and a
+    // launch that registers no init script at all -- Camoufox() +
+    // browser.new_page(), the documented default -- left all fifteen. Fifteen
+    // window properties no other Firefox has is a sharper fingerprint than
+    // anything they were hiding.
+    ChromeUtils.camouSealFingerprintSetters(camouInnerWindowId);
 
     const url = this.domWindow().location?.href;
     if (url === 'about:blank' && !this._url) {
@@ -806,7 +892,7 @@ class Worker {
     this._workerId = helper.generateId();
     this._workerDebugger = workerDebugger;
 
-    workerDebugger.initialize('chrome://juggler/content/content/WorkerMain.js');
+    workerDebugger.initialize('resource://gre/modules/juggler/content/WorkerMain.js');
 
     this._channel = new SimpleChannel(`content::worker[${this._workerId}]`, 'worker-' + this._workerId);
     this._channel.setTransport({

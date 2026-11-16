@@ -1,0 +1,77 @@
+diff --git a/toolkit/components/resistfingerprinting/moz.build b/toolkit/components/resistfingerprinting/moz.build
+--- a/toolkit/components/resistfingerprinting/moz.build
++++ b/toolkit/components/resistfingerprinting/moz.build
+@@ -23,6 +23,7 @@
+ ]
+ 
+ LOCAL_INCLUDES += [
++    "/camoucfg",
+     "/gfx/thebes",
+ ]
+ 
+diff --git a/toolkit/components/resistfingerprinting/nsRFPService.cpp b/toolkit/components/resistfingerprinting/nsRFPService.cpp
+--- a/toolkit/components/resistfingerprinting/nsRFPService.cpp
++++ b/toolkit/components/resistfingerprinting/nsRFPService.cpp
+@@ -55,6 +55,7 @@
+ #include "mozilla/gfx/2D.h"
+ #include "mozilla/intl/LocaleService.h"
+ #include "mozilla/XorShift128PlusRNG.h"
++#include "MaskConfig.hpp"
+ 
+ #include "nsAboutProtocolUtils.h"
+ #include "nsBaseHashtable.h"
+@@ -1321,6 +1322,38 @@
+ // ============================================================================
+ // ============================================================================
+ // Randomization Stuff
++
++// The browsing session key of a profile with aliasmode:canvasSeed: the same
++// version 4 UUID for the same seed and origin attributes on every launch.
++// Without a seed it is a fresh UUID, as stock.
++static nsID AliasModeBrowsingSessionKey(const nsACString& aOASuffix) {
++  const uint32_t seed =
++      MaskConfig::GetUint32("aliasmode:canvasSeed").value_or(0);
++  if (!seed) {
++    return nsID::GenerateUUID();
++  }
++  auto mix = [](uint64_t aValue) {
++    aValue ^= aValue >> 30;
++    aValue *= 0xbf58476d1ce4e5b9ull;
++    aValue ^= aValue >> 27;
++    aValue *= 0x94d049bb133111ebull;
++    return aValue ^ (aValue >> 31);
++  };
++  uint64_t state = mix(uint64_t(seed) ^ 0x5be0cd19137e2179ull);
++  for (const char* c = aOASuffix.BeginReading(); c != aOASuffix.EndReading();
++       ++c) {
++    state = mix(state ^ uint8_t(*c));
++  }
++  const uint64_t words[2] = {mix(state + 0x9e3779b97f4a7c15ull),
++                             mix(state + 2 * 0x9e3779b97f4a7c15ull)};
++  nsID key;
++  static_assert(sizeof(key) == sizeof(words));
++  memcpy(&key, words, sizeof(key));
++  key.m2 = uint16_t((key.m2 & 0x0fff) | 0x4000);
++  key.m3[0] = uint8_t((key.m3[0] & 0x3f) | 0x80);
++  return key;
++}
++
+ nsresult nsRFPService::GetBrowsingSessionKey(
+     const OriginAttributes& aOriginAttributes, nsID& aBrowsingSessionKey) {
+   MOZ_ASSERT(XRE_IsParentProcess());
+@@ -1358,8 +1391,13 @@
+     return NS_OK;
+   }
+ 
+-  nsID& newKey =
+-      mBrowsingSessionKeys.InsertOrUpdate(oaSuffix, nsID::GenerateUUID());
++  // AliasMode: with aliasmode:canvasSeed the key comes from the profile's seed
++  // and the origin attributes, not a fresh UUID per launch. Stock Firefox keys
++  // the toDataURL deBG chunk (EfficientCanvasRandomization) and any canvas
++  // randomization with it, so a returning profile now encodes the same canvas
++  // the same way on every launch, and two profiles still encode it apart.
++  nsID& newKey = mBrowsingSessionKeys.InsertOrUpdate(
++      oaSuffix, AliasModeBrowsingSessionKey(oaSuffix));
+ 
+   MOZ_LOG(gResistFingerprintingLog, LogLevel::Debug,
+           ("Generated browsing session key: %s\n", newKey.ToString().get()));

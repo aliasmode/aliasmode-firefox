@@ -5,12 +5,12 @@
 // Services is available as a global in XPCOM component context
 
 // Load SimpleChannel in browser-process global.
-Services.scriptloader.loadSubScript('chrome://juggler/content/SimpleChannel.js');
-const {Dispatcher} = ChromeUtils.importESModule("chrome://juggler/content/protocol/Dispatcher.js");
-const {BrowserHandler} = ChromeUtils.importESModule("chrome://juggler/content/protocol/BrowserHandler.js");
-const {NetworkObserver} = ChromeUtils.importESModule("chrome://juggler/content/NetworkObserver.js");
-const {TargetRegistry} = ChromeUtils.importESModule("chrome://juggler/content/TargetRegistry.js");
-const {Helper} = ChromeUtils.importESModule('chrome://juggler/content/Helper.js');
+Services.scriptloader.loadSubScript('resource://gre/modules/juggler/SimpleChannel.js');
+const {Dispatcher} = ChromeUtils.importESModule("resource://gre/modules/juggler/protocol/Dispatcher.js");
+const {BrowserHandler} = ChromeUtils.importESModule("resource://gre/modules/juggler/protocol/BrowserHandler.js");
+const {NetworkObserver} = ChromeUtils.importESModule("resource://gre/modules/juggler/NetworkObserver.js");
+const {TargetRegistry} = ChromeUtils.importESModule("resource://gre/modules/juggler/TargetRegistry.js");
+const {Helper} = ChromeUtils.importESModule('resource://gre/modules/juggler/Helper.js');
 const {ActorManagerParent} = ChromeUtils.importESModule('resource://gre/modules/ActorManagerParent.sys.mjs');
 const helper = new Helper();
 
@@ -21,10 +21,10 @@ const Ci = Components.interfaces;
 ActorManagerParent.addJSWindowActors({
   JugglerFrame: {
     parent: {
-      esModuleURI: 'chrome://juggler/content/JugglerFrameParent.sys.mjs',
+      esModuleURI: 'resource://gre/modules/juggler/JugglerFrameParent.sys.mjs',
     },
     child: {
-      esModuleURI: 'chrome://juggler/content/JugglerFrameChild.sys.mjs',
+      esModuleURI: 'resource://gre/modules/juggler/JugglerFrameChild.sys.mjs',
       events: {
         // Normally, we instantiate an actor when a new window is created.
         DOMWindowCreated: {},
@@ -39,6 +39,7 @@ ActorManagerParent.addJSWindowActors({
       },
     },
     allFrames: true,
+    safeForUntrustedWebProcess: true,
   },
 });
 
@@ -79,10 +80,14 @@ export class Juggler {
           return;
 
         this._silent = cmdLine.findFlag('silent', false) >= 0;
-        if (this._silent) {
+        // AliasMode: with this pref a persistent launch outlives its last
+        // window on Windows and Linux too, as Firefox does on macOS, so the app
+        // can save the profile before it stops the browser with Browser.close.
+        this._keepAlive = this._silent || Services.prefs.getBoolPref('aliasmode.keepAliveWithoutWindows', false);
+        if (this._keepAlive)
           Services.startup.enterLastWindowClosingSurvivalArea();
+        if (this._silent)
           browserStartupFinishedCallback();
-        }
         Services.obs.addObserver(this, "final-ui-startup");
         break;
       case "browser-idle-startup-tasks-finished":
@@ -92,16 +97,17 @@ export class Juggler {
       case "final-ui-startup":
         Services.obs.removeObserver(this, topic);
 
-        const targetRegistry = new TargetRegistry();
+        const targetRegistry = new TargetRegistry({ lastWindowQuits: !this._silent });
         new NetworkObserver(targetRegistry);
 
         const loadStyleSheet = () => {
-          if (Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo).isHeadless) {
-            const styleSheetService = Cc["@mozilla.org/content/style-sheet-service;1"].getService(Components.interfaces.nsIStyleSheetService);
-            const ioService = Cc["@mozilla.org/network/io-service;1"].getService(Components.interfaces.nsIIOService);
-            const uri = ioService.newURI('chrome://juggler/content/content/hidden-scrollbars.css', null, null);
-            styleSheetService.loadAndRegisterSheet(uri, styleSheetService.AGENT_SHEET);
-          }
+          // Camoufox: upstream Playwright hides content scrollbars in headless
+          // with an agent sheet (scrollbar-width: none !important). A page can
+          // read that back -- getComputedStyle(document.body).scrollbarWidth is
+          // "none" and overflow:scroll boxes lose their gutter -- and no stock
+          // Firefox does it. Scrollbar appearance is left to the platform
+          // look-and-feel instead (the launcher sets ui.useOverlayScrollbars to
+          // what the claimed OS shows), so headless matches headed.
         };
 
         // Force create hidden window here, otherwise its creation later closes the web socket!
@@ -136,7 +142,7 @@ export class Juggler {
         pipe.init(connection);
         const dispatcher = new Dispatcher(connection);
         browserHandler = new BrowserHandler(dispatcher.rootSession(), dispatcher, targetRegistry, browserStartupFinishedPromise, () => {
-          if (this._silent)
+          if (this._keepAlive)
             Services.startup.exitLastWindowClosingSurvivalArea();
           connection.onclose();
           pipe.stop();

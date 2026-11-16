@@ -1,0 +1,280 @@
+diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.cpp
+--- a/dom/canvas/ClientWebGLContext.cpp
++++ b/dom/canvas/ClientWebGLContext.cpp
+@@ -3,6 +3,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "ClientWebGLContext.h"
++#include "AliasModeReadbackNoise.h"
+ #include "MaskConfig.hpp"
+ #include "WebGLParamsManager.h"
+ #include "mozilla/dom/BrowsingContext.h"
+@@ -41,6 +42,7 @@
+ #include "mozilla/dom/WebGLContextEvent.h"
+ #include "mozilla/dom/WorkerCommon.h"
+ #include "mozilla/gfx/CanvasManagerChild.h"
++#include "mozilla/gfx/DataSurfaceHelpers.h"
+ #include "mozilla/gfx/Swizzle.h"
+ #include "mozilla/gfx/gfxVars.h"
+ #include "mozilla/ipc/Shmem.h"
+@@ -1396,6 +1398,29 @@
+   return DoReadPixelsAsync();
+ }
+ 
++// A copy of a snapshot with the profile's readback noise
++// (AliasModeReadbackNoise.h), leaving the snapshot itself as drawn.
++static RefPtr<gfx::DataSourceSurface> WithReadbackNoise(
++    gfx::DataSourceSurface* aSurface, bool aPremultiplied) {
++  RefPtr<gfx::DataSourceSurface> copy =
++      gfx::CreateDataSourceSurfaceByCloning(aSurface);
++  if (!copy) {
++    return aSurface;
++  }
++  gfx::DataSourceSurface::ScopedMap map(copy,
++                                        gfx::DataSourceSurface::READ_WRITE);
++  if (!map.IsMapped()) {
++    return aSurface;
++  }
++  readback_noise::Apply(map.GetData(), map.GetStride(), copy->GetSize().width,
++                        copy->GetSize().height,
++                        copy->GetFormat() == gfx::SurfaceFormat::B8G8R8X8
++                            ? readback_noise::kBGRX
++                            : readback_noise::kBGRA,
++                        aPremultiplied);
++  return copy;
++}
++
+ UniquePtr<uint8_t[]> ClientWebGLContext::GetImageBuffer(
+     mozilla::CanvasUtils::ImageExtraction aExtractionBehavior,
+     int32_t* out_format, gfx::IntSize* out_imageSize) {
+@@ -1413,8 +1438,11 @@
+   if (!snapshot) return nullptr;
+ 
+   RefPtr<gfx::DataSourceSurface> dataSurface = snapshot->GetDataSurface();
+-
+   const auto& premultAlpha = notLost->info.options.premultipliedAlpha;
++  if (mRasterized && readback_noise::Seed()) {
++    dataSurface = WithReadbackNoise(dataSurface, premultAlpha);
++  }
++
+   *out_imageSize = dataSurface->GetSize();
+ 
+   nsRFPService::PotentiallyDumpImage(PrincipalOrNull(), dataSurface);
+@@ -1444,6 +1472,9 @@
+ 
+   RefPtr<gfx::DataSourceSurface> dataSurface = snapshot->GetDataSurface();
+   const auto& premultAlpha = notLost->info.options.premultipliedAlpha;
++  if (mRasterized && readback_noise::Seed()) {
++    dataSurface = WithReadbackNoise(dataSurface, premultAlpha);
++  }
+ 
+   nsRFPService::PotentiallyDumpImage(PrincipalOrNull(), dataSurface);
+   if (extractionBehavior == CanvasUtils::ImageExtraction::Randomize) {
+@@ -2650,6 +2681,20 @@
+       return GetString(LOCAL_GL_RENDERER);
+     };
+ 
++    // The identity's GPU. It stands in for the real context's strings only,
++    // after stock's fingerprinting-protection checks, so RENDERER and the
++    // UNMASKED_* strings always name the same GPU.
++    const auto GetSpoofedRenderer = [&]() -> Maybe<std::string> {
++      nsAutoString stored;
++      if (WebGLParamsManager::GetRenderer(GetUserContextId(), stored)) {
++        return Some(std::string(NS_ConvertUTF16toUTF8(stored).get()));
++      }
++      if (auto value = MaskConfig::GetString("webGl:renderer")) {
++        return Some(*value);
++      }
++      return Nothing();
++    };
++
+     const auto GetUnmaskedVendor = [&]() {
+       const auto prefLock = StaticPrefs::webgl_override_unmasked_vendor();
+       if (!prefLock->IsEmpty()) {
+@@ -2658,6 +2703,17 @@
+       return GetString(LOCAL_GL_VENDOR);
+     };
+ 
++    const auto GetSpoofedVendor = [&]() -> Maybe<std::string> {
++      nsAutoString stored;
++      if (WebGLParamsManager::GetVendor(GetUserContextId(), stored)) {
++        return Some(std::string(NS_ConvertUTF16toUTF8(stored).get()));
++      }
++      if (auto value = MaskConfig::GetString("webGl:vendor")) {
++        return Some(*value);
++      }
++      return Nothing();
++    };
++
+     // -
+ 
+     Maybe<std::string> ret;
+@@ -2674,6 +2730,9 @@
+           allowRenderer = false;
+         }
+         if (allowRenderer) {
++          ret = GetSpoofedRenderer();
++        }
++        if (allowRenderer && !ret) {
+           ret = GetUnmaskedRenderer();
+           if (ret) {
+             ret = Some(webgl::SanitizeRenderer(*ret));
+@@ -2710,40 +2769,21 @@
+ 
+         switch (pname) {
+           case dom::WEBGL_debug_renderer_info_Binding::UNMASKED_RENDERER_WEBGL:
+-            {
+-              nsAutoString stored;
+-              if (WebGLParamsManager::GetRenderer(GetUserContextId(), stored)) {
+-                ret = Some(NS_ConvertUTF16toUTF8(stored));
+-                break;
+-              }
+-            }
+-            if (auto value = MaskConfig::GetString("webGl:renderer")) {
+-              ret = Some(value.value());
+-              break;
+-            }
+             if (ShouldResistFingerprinting(RFPTarget::WebGLRenderInfo) ||
+                 ShouldResistFingerprinting(RFPTarget::WebGLRendererConstant)) {
+               ret = Some("Mozilla"_ns);
+             } else {
+-              ret = GetUnmaskedRenderer();
+-              if (ret && StaticPrefs::webgl_sanitize_unmasked_renderer()) {
+-                ret = Some(webgl::SanitizeRenderer(*ret));
++              ret = GetSpoofedRenderer();
++              if (!ret) {
++                ret = GetUnmaskedRenderer();
++                if (ret && StaticPrefs::webgl_sanitize_unmasked_renderer()) {
++                  ret = Some(webgl::SanitizeRenderer(*ret));
++                }
+               }
+             }
+             break;
+ 
+           case dom::WEBGL_debug_renderer_info_Binding::UNMASKED_VENDOR_WEBGL:
+-            {
+-              nsAutoString stored;
+-              if (WebGLParamsManager::GetVendor(GetUserContextId(), stored)) {
+-                ret = Some(NS_ConvertUTF16toUTF8(stored));
+-                break;
+-              }
+-            }
+-            if (auto value = MaskConfig::GetString("webGl:vendor")) {
+-              ret = Some(value.value());
+-              break;
+-            }
+             if (ShouldResistFingerprinting(RFPTarget::WebGLRenderInfo)) {
+               ret = Some("Mozilla"_ns);
+             } else if (ShouldResistFingerprinting(
+@@ -2768,10 +2808,13 @@
+                            RFPTarget::WebGLVendorConstant)) {
+               ret = Some("Mozilla"_ns);
+             } else {
+-              ret = GetUnmaskedVendor();
+-              if (ret &&
+-                  ShouldResistFingerprinting(RFPTarget::WebGLVendorSanitize)) {
+-                ret = Some(webgl::SanitizeVendor(*ret));
++              ret = GetSpoofedVendor();
++              if (!ret) {
++                ret = GetUnmaskedVendor();
++                if (ret && ShouldResistFingerprinting(
++                               RFPTarget::WebGLVendorSanitize)) {
++                  ret = Some(webgl::SanitizeVendor(*ret));
++                }
+               }
+             }
+             break;
+@@ -5702,6 +5745,7 @@
+       } else {
+         RecordCanvasUsage(CanvasExtractionAPI::ReadPixels,
+                           CSSIntSize(width, height));
++        ApplyReadbackNoise(desc, *range);
+         if (extraction == CanvasUtils::ImageExtraction::Randomize) {
+           const auto pii = webgl::PackingInfoInfo::For(desc.pi);
+           // DoReadPixels() requres pii to be Some().
+@@ -5728,6 +5772,55 @@
+   });
+ }
+ 
++void ClientWebGLContext::ApplyReadbackNoise(const webgl::ReadPixelsDesc& desc,
++                                            const Span<uint8_t> dest) const {
++  if (!mRasterized || !readback_noise::Seed() ||
++      desc.pi.format != LOCAL_GL_RGBA ||
++      desc.pi.type != LOCAL_GL_UNSIGNED_BYTE || !desc.size.x || !desc.size.y) {
++    return;
++  }
++  RefPtr<webgl::NotLostData> notLost(mNotLost);
++  if (!notLost) {
++    return;
++  }
++  if (!State().mBoundReadFb) {
++    // DrawingBufferSize() only caches the size it asks the host for.
++    const auto size =
++        const_cast<ClientWebGLContext*>(this)->DrawingBufferSize();
++    if (readback_noise::Exempt(int32_t(size.x), int32_t(size.y))) {
++      return;
++    }
++  }
++  // An edge pixel's key needs its neighbours, so read the rectangle again with
++  // a one-pixel border. Pixels outside the framebuffer stay transparent black.
++  webgl::ReadPixelsDesc wide;
++  wide.srcOffset = {desc.srcOffset.x - 1, desc.srcOffset.y - 1};
++  wide.size = {desc.size.x + 2, desc.size.y + 2};
++  const size_t wideStride = size_t(wide.size.x) * 4;
++  const size_t wideBytes = wideStride * wide.size.y;
++  const auto clean = MakeUnique<uint8_t[]>(wideBytes);
++  if (!DoReadPixels(wide, Span<uint8_t>(clean.get(), wideBytes))) {
++    return;
++  }
++  // GL rows run bottom-up; the image a page sees, and so the key, top-down.
++  const readback_noise::Image image{
++      clean.get() + wideStride * (wide.size.y - 1), -ptrdiff_t(wideStride),
++      int32_t(wide.size.x), int32_t(wide.size.y), readback_noise::kRGBA};
++  const auto& packing = desc.packState;
++  const size_t rowPixels = packing.rowLength ? packing.rowLength : desc.size.x;
++  const size_t alignment = packing.alignmentInTypeElems;
++  const size_t stride = (rowPixels * 4 + alignment - 1) / alignment * alignment;
++  const size_t top = (packing.skipRows + desc.size.y - 1) * stride +
++                     packing.skipPixels * size_t(4);
++  if (top + desc.size.x * size_t(4) > dest.size()) {
++    return;
++  }
++  readback_noise::ApplyToCopy(image, 1, 1, dest.data() + top,
++                              -ptrdiff_t(stride), int32_t(desc.size.x),
++                              int32_t(desc.size.y), readback_noise::kRGBA,
++                              notLost->info.options.premultipliedAlpha);
++}
++
+ bool ClientWebGLContext::DoReadPixels(const webgl::ReadPixelsDesc& desc,
+                                       const Span<uint8_t> dest) const {
+   RefPtr<webgl::NotLostData> notLost(mNotLost);
+diff --git a/dom/canvas/ClientWebGLContext.h b/dom/canvas/ClientWebGLContext.h
+--- a/dom/canvas/ClientWebGLContext.h
++++ b/dom/canvas/ClientWebGLContext.h
+@@ -1126,6 +1126,8 @@
+   RefPtr<gfx::DataSourceSurface> BackBufferSnapshot();
+   [[nodiscard]] bool DoReadPixels(const webgl::ReadPixelsDesc&,
+                                   Span<uint8_t>) const;
++  // Per-profile noise on pixels readPixels returned (AliasModeReadbackNoise.h).
++  void ApplyReadbackNoise(const webgl::ReadPixelsDesc&, Span<uint8_t>) const;
+ 
+   RefPtr<dom::HTMLCanvasElement::SurfaceSnapshotPromise>
+   BackBufferSnapshotAsync();
+@@ -1138,6 +1140,9 @@
+   // -
+ 
+   mutable bool mAutoFlushPending = false;
++  // Whether anything has been drawn: a context that only cleared reads back
++  // as cleared.
++  bool mRasterized = false;
+ 
+   void AutoEnqueueFlush() const {
+     if (mAutoFlushPending) [[likely]] {
+@@ -1168,6 +1173,7 @@
+   // -
+ 
+   void AfterDrawCall() {
++    mRasterized = true;
+     if (!mNotLost) return;
+     const auto& state = State();
+     if (!state.mBoundDrawFb) {

@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const {Helper} = ChromeUtils.importESModule('chrome://juggler/content/Helper.js');
+const {Helper} = ChromeUtils.importESModule('resource://gre/modules/juggler/Helper.js');
 const {Preferences} = ChromeUtils.importESModule("resource://gre/modules/Preferences.sys.mjs");
-const {ContextualIdentityService} = ChromeUtils.importESModule("resource://gre/modules/ContextualIdentityService.sys.mjs");
+const {ContextualIdentityService} = ChromeUtils.importESModule("moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs");
 const {NetUtil} = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys.mjs');
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
 const {HiddenFrame} = ChromeUtils.importESModule("resource://gre/modules/HiddenFrame.sys.mjs");
@@ -12,11 +12,41 @@ const {HiddenFrame} = ChromeUtils.importESModule("resource://gre/modules/HiddenF
 // scripts), so the screencast tick has to import them explicitly.
 const {setTimeout, clearTimeout} = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
 
+// Last-resort bound on how long one callback may occupy the process-global
+// activation chain below. The chain must always advance: a callback that never
+// returns wedges every later input event in every tab, permanently.
+//
+// The per-ack deadline in MouseDispatch.js covers the await that has actually
+// caused all four shipped deadlocks, but it is one of several unbounded waits
+// reachable from a single slot -- apz-repaints-flushed, TabSwitchDone below,
+// the drag path's juggler-drag-finalized and dragover waits, and the
+// cross-process dispatchDragEvent sends all have the same shape. None of them
+// has failed yet. Bounding only the wait that has already bitten us is the
+// posture that produced those four fixes, so bound the slot itself too.
+//
+// Sized as a backstop, not a tuning knob: with a 5s ack deadline a legitimate
+// worst-case input slot approaches 10s, so this must sit well clear of that.
+const kActivationSlotBudgetMs = 30000;
+const kSlotExpired = Symbol('activation-slot-expired');
+
 const Cr = Components.results;
 
 const helper = new Helper();
 
 const IDENTITY_NAME = 'JUGGLER ';
+
+// Camoufox: every juggler browser context is a Firefox container. A PUBLIC
+// container renders its name ("JUGGLER <id>") and colour in the URL bar and the
+// tab strip -- a visible automation cue a real Firefox never shows. The
+// userContextId (not the public flag) is what isolates cookies and storage, so
+// keep the identity but mark it non-public: tabbrowser's indicator and the
+// container menus only render public identities. ContextualIdentityService.remove()
+// only deletes public identities, so flip the flag back before removing.
+function setIdentityPublic(userContextId, isPublic) {
+  const record = (ContextualIdentityService._identities || []).find(i => i.userContextId == userContextId);
+  if (record)
+    record.public = isPublic;
+}
 const HUNDRED_YEARS = 60 * 60 * 24 * 365 * 100;
 
 // Capture rate for the compositor-backed screencast. Playwright muxes at 25fps
@@ -28,6 +58,8 @@ const SNAPSHOT_SCREENCAST_FPS = 25;
 const ALL_PERMISSIONS = [
   'geo',
   'desktop-notification',
+  'local-network',
+  'loopback-network',
 ];
 
 let globalTabAndWindowActivationChain = Promise.resolve();
@@ -117,9 +149,15 @@ export class TargetRegistry {
     return TargetRegistry._instance || null;
   }
 
-  constructor() {
+  constructor({ lastWindowQuits = true } = {}) {
     helper.decorateAsEventEmitter(this);
     TargetRegistry._instance = this;
+
+    // False when Juggler holds the last-window-closing survival area (-silent,
+    // every non-persistent launch); a persistent launch quits with its last window.
+    this._lastWindowQuits = lastWindowQuits;
+    // Crashed pages whose tab is the browser's last; see _closeCrashedTab.
+    this._retainedCrashedTargets = new Set();
 
     this._browserContextIdToBrowserContext = new Map();
     this._userContextIdToBrowserContext = new Map();
@@ -138,11 +176,14 @@ export class TargetRegistry {
     this._browserProxy = null;
 
     // Cleanup containers from previous runs (if any)
-    for (const identity of ContextualIdentityService.getPublicIdentities()) {
-      if (identity.name && identity.name.startsWith(IDENTITY_NAME)) {
-        ContextualIdentityService.remove(identity.userContextId);
-        ContextualIdentityService.closeContainerTabs(identity.userContextId);
-      }
+    ContextualIdentityService.ensureDataReady();
+    const staleIds = (ContextualIdentityService._identities || [])
+        .filter(identity => identity.name && identity.name.startsWith(IDENTITY_NAME))
+        .map(identity => identity.userContextId);
+    for (const userContextId of staleIds) {
+      setIdentityPublic(userContextId, true);
+      ContextualIdentityService.remove(userContextId);
+      ContextualIdentityService.closeContainerTabs(userContextId);
     }
 
     this._defaultContext = new BrowserContext(this, undefined, undefined);
@@ -157,8 +198,17 @@ export class TargetRegistry {
           return;
         target.emit(PageTarget.Events.Crashed);
         target.dispose();
+        // dispose() detaches the page from every client and drops it from its
+        // context, so nothing could close this tab afterwards: context.close()
+        // only closes the pages it still tracks, and the default context closes
+        // none. Each crashed page kept its window alive until the browser
+        // exited -- 15-60 MB of parent RSS apiece, growing without bound across
+        // repeated crashes (#762's scraper). Deferred so the tab is not torn
+        // down inside Gecko's own crash notification.
         if (!target._gBrowser)
           browser.remove();
+        else
+          setTimeout(() => this._closeCrashedTab(target), 0);
       }
     }, 'oop-frameloader-crashed');
 
@@ -185,6 +235,11 @@ export class TargetRegistry {
         target.updateViewportSize();
       if (browserContext.videoRecordingOptions)
         target._startVideoRecording(browserContext.videoRecordingOptions);
+
+      // Another tab exists now, so a crashed page kept as the last one can go.
+      for (const crashed of this._retainedCrashedTargets)
+        setTimeout(() => this._closeCrashedTab(crashed), 0);
+      this._retainedCrashedTargets.clear();
     };
 
     const onTabCloseListener = event => {
@@ -374,6 +429,16 @@ export class TargetRegistry {
 
   browserContextForUserContextId(userContextId) {
     return this._userContextIdToBrowserContext.get(userContextId);
+  }
+
+  _closeCrashedTab(target) {
+    if (this._lastWindowQuits && target.isLastTab()) {
+      // Closing it would quit a persistent-context browser under the client.
+      // Keep it until another tab opens; onTabOpenListener comes back for it.
+      this._retainedCrashedTargets.add(target);
+      return;
+    }
+    target.closeCrashedTab();
   }
 
   async newPage({browserContextId, hidden}) {
@@ -592,7 +657,18 @@ export class PageTarget {
       const notificationsPopup = muteNotificationsPopup ? this._linkedBrowser?.ownerDocument.getElementById('notification-popup') : null;
       notificationsPopup?.style.setProperty('pointer-events', 'none');
       try {
-        await callback();
+        let timer;
+        const expired = new Promise(resolve => {
+          timer = setTimeout(() => resolve(kSlotExpired), kActivationSlotBudgetMs);
+        });
+        try {
+          if (await Promise.race([callback(), expired]) === kSlotExpired) {
+            dump(`[juggler] WARN activation-chain slot exceeded ` +
+                 `${kActivationSlotBudgetMs}ms; advancing the chain without it\n`);
+          }
+        } finally {
+          clearTimeout(timer);
+        }
       } finally {
         notificationsPopup?.style.removeProperty('pointer-events');
       }
@@ -657,6 +733,7 @@ export class PageTarget {
     this.updateUserAgent(browsingContext);
     this.updatePlatform(browsingContext);
     this.updateDPPXOverride(browsingContext);
+    this.updateMobileEmulation(browsingContext);
     this.updateZoom(browsingContext);
     this.updateEmulatedMedia(browsingContext);
     this.updateColorSchemeOverride(browsingContext);
@@ -707,6 +784,19 @@ export class PageTarget {
     browsingContext.overrideDPPX = dppx;
   }
 
+  updateMobileEmulation(browsingContext = undefined) {
+    // Responsive Design Mode is devtools' mobile mode: overlay scrollbars, a
+    // mouse click's pointer events dropped under touch emulation, and RDM
+    // branches in screen, window and navigator getters, all readable by the
+    // page. It matches no real browser -- Firefox for Android never runs it --
+    // and Camoufox has only desktop identities, so it stays off even for
+    // isMobile. Playwright's Juggler turns it on for isMobile
+    // (microsoft/playwright#41859); this is a deliberate difference, and the
+    // launchers warn when isMobile is passed. The viewport does not need RDM:
+    // the <browser> element's size sets it.
+    (browsingContext || this._linkedBrowser.browsingContext).inRDMPane = false;
+  }
+
   async updateZoom(browsingContext = undefined) {
     browsingContext ||= this._linkedBrowser.browsingContext;
     // Update dpr first, and then UI zoom.
@@ -736,6 +826,7 @@ export class PageTarget {
   async updateViewportSize() {
     await this.windowReady();
     this.updateDPPXOverride();
+    this.updateMobileEmulation();
     if (!this._gBrowser) {
       const viewport = this._viewportSize || this._browserContext.defaultViewportSize;
       if (viewport) {
@@ -765,7 +856,6 @@ export class PageTarget {
       this._linkedBrowser.closest('.browserStack').style.setProperty('overflow', 'auto');
       this._linkedBrowser.closest('.browserStack').style.setProperty('contain', 'size');
       this._linkedBrowser.closest('.browserStack').style.setProperty('scrollbar-width', 'none');
-      this._linkedBrowser.browsingContext.inRDMPane = true;
 
       const stackRect = this._linkedBrowser.closest('.browserStack').getBoundingClientRect();
       const toolbarTop = stackRect.y;
@@ -779,7 +869,6 @@ export class PageTarget {
       this._linkedBrowser.closest('.browserStack').style.removeProperty('overflow');
       this._linkedBrowser.closest('.browserStack').style.removeProperty('contain');
       this._linkedBrowser.closest('.browserStack').style.removeProperty('scrollbar-width');
-      this._linkedBrowser.browsingContext.inRDMPane = false;
 
       const actualSize = this._linkedBrowser.getBoundingClientRect();
       await this._channel.connect('').send('awaitViewportDimensions', {
@@ -864,6 +953,23 @@ export class PageTarget {
     this._gBrowser.removeTab(this._tab, {
       skipPermitUnload: !runBeforeUnload,
     });
+  }
+
+  closeCrashedTab() {
+    // Its window or context may have closed it first.
+    if (!this._tab.isConnected || this._tab.closing)
+      return;
+    this.close();
+  }
+
+  isLastTab() {
+    if (this._gBrowser.tabs.length > 1)
+      return false;
+    for (const win of Services.wm.getEnumerator('navigator:browser')) {
+      if (win !== this._window && !win.closed)
+        return false;
+    }
+    return true;
   }
 
   channel() {
@@ -1082,8 +1188,20 @@ export class PageTarget {
       state.inFlight = true;
       this.emit(PageTarget.Events.ScreencastFrame, {
         data: dataURL.substring(dataURL.indexOf(',') + 1),
-        deviceWidth: frameWidth,
-        deviceHeight: frameHeight,
+        // The viewport this frame depicts -- NOT the JPEG's own dimensions.
+        // Playwright's Firefox delegate maps deviceWidth/deviceHeight straight
+        // onto the client-visible viewportWidth/viewportHeight, and every other
+        // backend fills them from the page's viewport: the native path above
+        // sends pageWidth/pageHeight (clamped to the viewport, never scaled by
+        // the requested frame size), and the Chromium delegate forwards CDP's
+        // metadata.deviceWidth. Sending frameWidth/frameHeight here made the
+        // pair track `size=` instead, so a client asking for a 500x400 frame of
+        // a 1000x400 page was told the viewport was 500x200 -- and asking for a
+        // frame larger than the page reported a viewport larger than the page.
+        // The scaled dimensions are still carried by the JPEG itself, which is
+        // where a consumer that wants the image size reads them from.
+        deviceWidth: Math.round(rect.width),
+        deviceHeight: Math.round(rect.height),
         timestamp: Date.now() / 1000,
       });
     };
@@ -1223,6 +1341,7 @@ class BrowserContext {
     if (browserContextId !== undefined) {
       const identity = ContextualIdentityService.create(IDENTITY_NAME + browserContextId);
       this.userContextId = identity.userContextId;
+      setIdentityPublic(this.userContextId, false);
     }
     this._principals = [];
     // Maps origins to the permission lists.
@@ -1287,6 +1406,7 @@ class BrowserContext {
 
   async destroy() {
     if (this.userContextId !== 0) {
+      setIdentityPublic(this.userContextId, true);
       ContextualIdentityService.remove(this.userContextId);
       for (const page of this.pages)
         page.close();

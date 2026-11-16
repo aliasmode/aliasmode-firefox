@@ -7,10 +7,15 @@ Written by daijro.
 #include "json.hpp"
 #include <memory>
 #include <string>
+#include <string_view>
 #include <tuple>
+#include <utility>
+#include <cstdint>
+#include <atomic>
 #include <optional>
 #include <codecvt>
 #include "mozilla/glue/Debug.h"
+#include "mozilla/RandomNum.h"
 #include <cstdlib>
 #include <cstdio>
 #include <mutex>
@@ -18,6 +23,7 @@ Written by daijro.
 #include <cstddef>
 #include <vector>
 #include <algorithm>
+#include <set>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -116,6 +122,39 @@ inline std::vector<std::string> GetStringListLower(const std::string& key) {
   return result;
 }
 
+/**
+ * The spoofed font family allowlist ("fonts"), lowercased and cached for the
+ * lifetime of the process. CAMOU_CONFIG is read once at startup and never
+ * changes, and the gfx font lookup paths consult this on every family
+ * resolution, so re-parsing the JSON per call is not an option.
+ * An empty list means no font spoofing is configured.
+ */
+inline const std::vector<std::string>& FontAllowlist() {
+  static const std::vector<std::string> fonts = GetStringListLower("fonts");
+  return fonts;
+}
+
+inline bool HasFontAllowlist() { return !FontAllowlist().empty(); }
+
+// The same list as a sorted set: font lookups and font fallback consult it for
+// every family they look at.
+inline const std::set<std::string, std::less<>>& FontAllowlistSet() {
+  static const std::set<std::string, std::less<>> fonts(
+      FontAllowlist().begin(), FontAllowlist().end());
+  return fonts;
+}
+
+/**
+ * Whether a font family may be used. `family` must already be lowercased
+ * (gfxPlatformFontList::GenerateFontListKey output is). Always true when no
+ * allowlist is configured.
+ */
+inline bool IsFontAllowed(std::string_view family) {
+  const auto& fonts = FontAllowlistSet();
+  if (fonts.empty()) return true;
+  return fonts.find(family) != fonts.end();
+}
+
 template <typename T>
 inline std::optional<T> GetUintImpl(const std::string& key) {
   const auto& data = GetJson();
@@ -164,6 +203,86 @@ inline bool CheckBool(const std::string& key) {
   return GetBool(key).value_or(false);
 }
 
+// The OS the identity presents, from navigator.platform. None means no
+// platform is configured; Other, one no identity uses.
+enum class SpoofedOS { None, Windows, MacOS, Linux, Other };
+
+inline SpoofedOS GetSpoofedOS() {
+  static const SpoofedOS os = [] {
+    auto platform = GetString("navigator.platform");
+    if (!platform) return SpoofedOS::None;
+    if (*platform == "Win32") return SpoofedOS::Windows;
+    if (*platform == "MacIntel") return SpoofedOS::MacOS;
+    if (platform->rfind("Linux", 0) == 0) return SpoofedOS::Linux;
+    return SpoofedOS::Other;
+  }();
+  return os;
+}
+
+// How an OS's kernel picks the port of a UDP socket bound to port 0: its
+// ephemeral range, and whether it hands the ports out in sequence (Windows)
+// or at random (macOS, and Linux with its default net.ipv4.ip_local_port_range).
+// A page sees these ports in WebRTC candidates.
+struct EphemeralPortPolicy {
+  uint16_t lo;
+  uint16_t hi;
+  bool sequential;
+  bool operator==(const EphemeralPortPolicy& aOther) const {
+    return lo == aOther.lo && hi == aOther.hi &&
+           sequential == aOther.sequential;
+  }
+  bool operator!=(const EphemeralPortPolicy& aOther) const {
+    return !(*this == aOther);
+  }
+};
+
+inline std::optional<EphemeralPortPolicy> SpoofedPortPolicy() {
+  switch (GetSpoofedOS()) {
+    case SpoofedOS::Windows:
+      return EphemeralPortPolicy{49152, 65535, true};
+    case SpoofedOS::MacOS:
+      return EphemeralPortPolicy{49152, 65535, false};
+    case SpoofedOS::Linux:
+      return EphemeralPortPolicy{32768, 60999, false};
+    default:
+      return std::nullopt;
+  }
+}
+
+inline EphemeralPortPolicy HostPortPolicy() {
+#if defined(XP_WIN)
+  return EphemeralPortPolicy{49152, 65535, true};
+#elif defined(XP_MACOSX)
+  return EphemeralPortPolicy{49152, 65535, false};
+#else
+  return EphemeralPortPolicy{32768, 60999, false};
+#endif
+}
+
+// The first of aCount ports the kernel of aPolicy would give sockets bound one
+// after another. In sequence, one counter per process starts at a random point
+// of the range, and now and then a port is skipped, as other programs on the
+// machine take some in between.
+inline uint16_t NextEphemeralPort(const EphemeralPortPolicy& aPolicy,
+                                  uint32_t aCount = 1) {
+  const uint32_t span = uint32_t(aPolicy.hi - aPolicy.lo) + 1u;
+  if (!aPolicy.sequential) {
+    return uint16_t(aPolicy.lo + mozilla::RandomUint64OrDie() % span);
+  }
+  static std::atomic<uint32_t> sNext{0};
+  uint32_t offset = sNext.load();
+  uint32_t next;
+  do {
+    uint32_t start = offset ? offset - 1 : uint32_t(mozilla::RandomUint64OrDie() % span);
+    const uint32_t skip = mozilla::RandomUint64OrDie() % 8 == 0 ? 1 : 0;
+    start = (start + skip) % span;
+    next = (start + aCount) % span + 1;
+    if (sNext.compare_exchange_weak(offset, next)) {
+      return uint16_t(aPolicy.lo + start);
+    }
+  } while (true);
+}
+
 inline std::optional<std::array<uint32_t, 4>> GetRect(
     const std::string& left, const std::string& top, const std::string& width,
     const std::string& height) {
@@ -184,18 +303,6 @@ inline std::optional<std::array<uint32_t, 4>> GetRect(
                  [](const auto& value) { return value.value(); });
 
   return result;
-}
-
-inline std::optional<std::array<int32_t, 4>> GetInt32Rect(
-    const std::string& left, const std::string& top, const std::string& width,
-    const std::string& height) {
-  if (auto optValue = GetRect(left, top, width, height)) {
-    std::array<int32_t, 4> result;
-    std::transform(optValue->begin(), optValue->end(), result.begin(),
-                   [](const auto& val) { return static_cast<int32_t>(val); });
-    return result;
-  }
-  return std::nullopt;
 }
 
 // Helpers for WebGL
