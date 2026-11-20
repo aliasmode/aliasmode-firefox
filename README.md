@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://aliasmode.com/firefox/">Website</a> ·
   <a href="https://aliasmode.com/download/">Download AliasMode</a> ·
   <a href="https://github.com/aliasmode/aliasmode">AliasMode app</a> ·
   <a href="https://github.com/aliasmode/aliasmode-firefox/releases">Releases</a> ·
@@ -21,7 +22,7 @@
 
 ## What it is
 
-AliasMode Firefox is the browser engine inside [AliasMode](https://aliasmode.com), the free, open-source browser profile manager. Each AliasMode profile runs in this engine with its own fingerprint, proxy, and storage.
+AliasMode Firefox is the browser engine inside [AliasMode](https://aliasmode.com/), the free, open-source antidetect browser. Each AliasMode profile runs in this engine with its own fingerprint, proxy, and storage.
 
 Most anti-detect browsers ship a closed binary. You cannot check what it spoofs, what it leaks, or what it sends home. AliasMode Firefox is different: the engine, the patches, and the build pipeline are all in this repository under MPL-2.0.
 
