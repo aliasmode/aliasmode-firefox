@@ -30,7 +30,12 @@ def front():
     except Exception as e:
         return repr(e)
 
-def run(binary, prefs, other_focus):
+def activate(binary):
+    bundle = binary.split(".app/")[0] + ".app"
+    subprocess.run(["open", "-a", bundle], timeout=20)
+    time.sleep(2)
+
+def run(binary, prefs, other_focus, front_first=False):
     port = free_port()
     with tempfile.TemporaryDirectory(prefix="focus-") as profile:
         with open(os.path.join(profile, "user.js"), "w") as f:
@@ -43,6 +48,8 @@ def run(binary, prefs, other_focus):
         out = {}
         try:
             m = Marionette(port); time.sleep(4)
+            if front_first:
+                activate(binary)
             m.context("content"); m.call("WebDriver:Navigate", {"url": "data:text/html,<title>probe</title>probe"})
             out["start"] = m.js(LISTEN)
             m.context("chrome"); m.js(TRACE); out["state0"] = m.js(STATE); out["front0"] = front()
@@ -61,16 +68,17 @@ if __name__ == "__main__":
     ours, stock, up = sys.argv[1:4]
     res = {}
     signed = sys.argv[4]
-    for name, b, prefs, of in [
-        ("stock", stock, {}, "other.focus();"),
-        ("ours", ours, {}, "other.focus();"),
-        ("upstream", up, {}, "other.focus();"),
-        ("ours-adhoc-signed", signed, {}, "other.focus();"),
-        ("stock-nofocuscall", stock, {}, ""),
-        ("ours-nofocuscall", ours, {}, ""),
+    for name, b, prefs, of, ff in [
+        ("stock", stock, {}, "other.focus();", False),
+        ("ours", ours, {}, "other.focus();", False),
+        ("stock-frontmost", stock, {}, "other.focus();", True),
+        ("ours-frontmost", ours, {}, "other.focus();", True),
+        ("upstream-frontmost", up, {}, "other.focus();", True),
+        ("stock-frontmost-nofocuscall", stock, {}, "", True),
+        ("ours-frontmost-nofocuscall", ours, {}, "", True),
     ]:
         try:
-            res[name] = run(b, prefs, of)
+            res[name] = run(b, prefs, of, ff)
         except Exception as e:
             res[name] = {"error": repr(e)}
         print(name, json.dumps(res[name]), flush=True)
