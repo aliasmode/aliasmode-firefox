@@ -73,7 +73,6 @@ upstream patches because their context is the fully patched tree.
 | `macos-font-pack-gpu.patch` | (macOS: a process-scoped font, from `fonts/` or `aliasmode:fontsDir`, goes to the GPU process as data) |
 | `web-font-lookups.patch` | (hides dot-prefixed families from pages; needs `font-hijacker.patch`) |
 | `webgl-stated-limits.patch` | `webGl:parameters`, `webGl2:parameters` (read where the WebGL context runs, so a stated limit binds) |
-| `window-screen-position.patch` | `screen.availLeft`, `screen.availTop` (window and pointer positions on the claimed screen) |
 | `focus-events-stock.patch` | (no key; Playwright's focus events in an inactive window only with the pref `aliasmode.focus.emulate_active_window`) |
 | `tab-layout-repair.patch` | (CustomizableUI migration step 29) |
 | `zz-audio-fingerprint-manager.patch` | `audio:seed` (AliasMode's copy of the Camoufox patch upstream dropped in 159) |

@@ -26,6 +26,10 @@ identity here carries both sizes, and a 300x150 iframe must report 300x150.
 The popup's size is read several times across the startup hold, so a late
 resize to the identity's size is caught too.
 
+Every OS's identity is checked: the launcher used to draw one at random, and a
+macOS identity, whose available area starts below the 25 px menu bar, moved
+every position a page read 25 px down (window-screen-position.patch, removed).
+
     python browser/tests/playwright/patches/popup-window-size.py
 """
 
@@ -64,10 +68,10 @@ FRAME_SIZE = f"""() => new Promise(resolve => {{
 }})"""
 
 
-async def probe(binary):
+async def probe(binary, os_name):
     from camoufox.async_api import AsyncCamoufox
 
-    async with AsyncCamoufox(headless=True, executable_path=str(binary), config=CONFIG,
+    async with AsyncCamoufox(headless=True, os=os_name, executable_path=str(binary), config=CONFIG,
                              i_know_what_im_doing=True) as browser:
         page = await browser.new_page()
         await page.goto("about:blank")
@@ -91,22 +95,23 @@ async def probe(binary):
 
 
 def main() -> int:
-    main_size, main_pos, frame_size, readings, positions = asyncio.run(probe(resolve_binary()))
-    print(f"main window inner and outer {main_size} at {main_pos}, iframe inner {frame_size}, "
-          f"popup inner {readings} at {positions}")
     failures = []
-    if main_size[:2] != [CONFIG["window.innerWidth"], CONFIG["window.innerHeight"]]:
-        failures.append(f"the main window's content area {main_size[:2]} is not the identity's")
-    if main_size[2] == REQUESTED[0]:
-        failures.append("the main window is the popup's width, so the check proves nothing")
-    if frame_size != FRAME:
-        failures.append(f"a {FRAME} iframe reports {frame_size}")
-    if any(reading != REQUESTED for reading in readings):
-        failures.append(f"the popup's content area is not the {REQUESTED} its features asked for")
-    if main_pos != CLAIMED:
-        failures.append(f"the main window is not at the identity's position {CLAIMED}")
-    if any(position != PLACED for position in positions):
-        failures.append(f"the popup does not report the position {PLACED} its features asked for")
+    for os_name in ("windows", "macos", "linux"):
+        main_size, main_pos, frame_size, readings, positions = asyncio.run(probe(resolve_binary(), os_name))
+        print(f"{os_name}: main window inner and outer {main_size} at {main_pos}, iframe inner {frame_size}, "
+              f"popup inner {readings} at {positions}")
+        if main_size[:2] != [CONFIG["window.innerWidth"], CONFIG["window.innerHeight"]]:
+            failures.append(f"{os_name}: the main window's content area {main_size[:2]} is not the identity's")
+        if main_size[2] == REQUESTED[0]:
+            failures.append(f"{os_name}: the main window is the popup's width, so the check proves nothing")
+        if frame_size != FRAME:
+            failures.append(f"{os_name}: a {FRAME} iframe reports {frame_size}")
+        if any(reading != REQUESTED for reading in readings):
+            failures.append(f"{os_name}: the popup's content area is not the {REQUESTED} its features asked for")
+        if main_pos != CLAIMED:
+            failures.append(f"{os_name}: the main window is not at the identity's position {CLAIMED}")
+        if any(position != PLACED for position in positions):
+            failures.append(f"{os_name}: the popup does not report the position {PLACED} its features asked for")
     for failure in failures:
         print(f"FAIL: {failure}")
     if failures:
