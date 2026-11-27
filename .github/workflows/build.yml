@@ -1,9 +1,11 @@
-name: Build AliasMode Firefox
+name: Build and Release
 
 # AliasMode's engine build, on the browser/ layout of Camoufox 159. Every job runs
 # on GitHub's free ubuntu-24.04 runners and cross-compiles the Windows and macOS
 # targets. A manual run chooses its targets; it never publishes a release.
 # aliasmode-runtime-* releases are published by hand from a run's artifacts.
+# The name stays "Build and Release": the app's firefox-compatibility.yml checks
+# it in a run's provenance.
 on:
   workflow_dispatch:
     inputs:
