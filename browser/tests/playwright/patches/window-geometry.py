@@ -2,9 +2,10 @@ r"""
 Verify window geometry a page reads is the real window, placed on the screen
 the identity claims (window-screen-position.patch, CamoufoxWindow.sys.mjs).
 
-The identity claims a screen whose available area starts at x=1920 (a second
-monitor) and asks for a first window larger than that area. Read from the
-page's own world, a page must see:
+The identity is a Windows one as the AliasMode app sends it (fitDesktopPersona):
+its available area is the screen less the 48 px taskbar, at 0,0, as Firefox's
+baseline protection reports it, and the first window it asks for is larger than
+that area. Read from the page's own world, a page must see:
 
   first     outerWidth/outerHeight no larger than screen.availWidth/availHeight,
             and never smaller than innerWidth/innerHeight
@@ -38,7 +39,7 @@ from helpers import Marionette, marionette_args, marionette_env, resolve_binary 
 
 CONFIG = {
     "screen.width": 1200, "screen.height": 740,
-    "screen.availLeft": 1920, "screen.availTop": 0, "screen.availWidth": 1200, "screen.availHeight": 700,
+    "screen.availLeft": 0, "screen.availTop": 0, "screen.availWidth": 1200, "screen.availHeight": 692,
     "window.outerWidth": 1500, "window.outerHeight": 1000,
     "aliasmode:windowLabel": "Profile 7",
 }
@@ -86,7 +87,7 @@ def launch(binary, profile, env=None):
     from camoufox.sync_api import Camoufox
 
     # Marionette writes the port it really listens on into the profile.
-    return Camoufox(headless=True, executable_path=str(binary), args=marionette_args(),
+    return Camoufox(headless=True, os="windows", executable_path=str(binary), args=marionette_args(),
                     persistent_context=True, user_data_dir=profile, config=CONFIG,
                     env={**marionette_env(), **(env or {})},
                     main_world_eval=True, i_know_what_im_doing=True)
@@ -136,7 +137,7 @@ def main() -> int:
             print(f"resize: {resized}")
             check_geometry(resized, "resize", failures)
 
-            # The real 1366x768 screen is larger than the claimed 1200x700 area.
+            # The real 1366x768 screen is larger than the claimed 1200x692 area.
             time.sleep(max(0.0, hold_ends - time.time()))
             m.js(CHROME_PLACE)
             time.sleep(1)
@@ -152,9 +153,9 @@ def main() -> int:
         print(f"maximize: before {placed['outer']} at {placed['screen']}, maximized {maximized['outer']} at "
               f"{maximized['screen']}, maximized again {again['outer']} at {again['screen']}")
         check_geometry(maximized, "maximize", failures)
-        if maximized["outer"] != [1200, 700] or maximized["screen"] != [1920, 0]:
+        if maximized["outer"] != [1200, 692] or maximized["screen"] != [0, 0]:
             failures.append(f"maximize: on a larger real screen a maximize gave {maximized['outer']} at {maximized['screen']}, "
-                            "not the claimed available area 1200x700 at 1920,0")
+                            "not the claimed available area 1200x692 at 0,0")
         if (again["outer"], again["screen"]) != (placed["outer"], placed["screen"]):
             failures.append(f"maximize: a second maximize gave {again['outer']} at {again['screen']}, "
                             f"not the window from before, {placed['outer']} at {placed['screen']}")
