@@ -30,6 +30,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import hidden_display, launch_kwargs  # noqa: E402
 
 OUTER = {"window.outerWidth": 1200, "window.outerHeight": 800}
+# A screen whose available area holds that window. The launcher's drawn screen
+# was sometimes 1280x800, whose area (less the 48 px Windows taskbar) capped the
+# window at 1200x752 before the frame came.
+SCREEN = {"screen.width": 1920, "screen.height": 1080}
 # left, right, top, bottom: what WSLg's window manager sets.
 FRAME = (38, 38, 59, 38)
 # CamoufoxWindow.sys.mjs holds the startup size for 5 s from the window opening.
@@ -100,7 +104,7 @@ def probe() -> tuple:
     with hidden_display(screen="1400x900"):
         x11 = X11()
         x11.advertise_frame_extents()
-        with Camoufox(**launch_kwargs(headless=False, os="windows", config=OUTER,
+        with Camoufox(**launch_kwargs(headless=False, os="windows", config={**OUTER, **SCREEN},
                                       i_know_what_im_doing=True)) as browser:
             page = browser.new_page()
             started = time.monotonic()
