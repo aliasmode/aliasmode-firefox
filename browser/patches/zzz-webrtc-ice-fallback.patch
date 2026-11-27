@@ -1,0 +1,779 @@
+AliasMode: behind a proxy without UDP (an HTTP proxy), show the ICE agent
+stock Firefox on the identity's network shows instead of a machine whose UDP is
+blocked: host candidates, a srflx with the identity's address after the round
+trip through the proxy from a STUN server that could answer, the errors and
+timings nICEr gives the others, and checks that fail. None of it sends a
+packet. Behind a SOCKS5 proxy with UDP the real agent works through the
+proxy's UDP relay (webrtc-socks5-udp.patch) and this never starts.
+aliasmode:webrtcFakeIce false turns it off.
+
+diff --git a/dom/base/WebRTCIPManager.cpp b/dom/base/WebRTCIPManager.cpp
+--- a/dom/base/WebRTCIPManager.cpp
++++ b/dom/base/WebRTCIPManager.cpp
+@@ -3,6 +3,7 @@
+ #include "nsPrintfCString.h"
+ #include "mozilla/dom/Document.h"
+ #include "nsPIDOMWindow.h"
++#include "mozilla/Preferences.h"
+ 
+ namespace mozilla {
+ namespace dom {
+@@ -35,6 +36,32 @@ WebRTCIPManager::IsProxied(uint32_t userContextId) {
+           proxied);
+ }
+ 
++/* static */ bool
++WebRTCIPManager::ProxyRelaysUdp(uint32_t userContextId) {
++  // A context's own proxy wins over the browser's.
++  nsString proxiedKey;
++  proxiedKey.AppendLiteral(u"webrtc_proxied_");
++  proxiedKey.AppendInt(userContextId);
++  nsString udpKey;
++  udpKey.AppendLiteral(u"webrtc_proxy_udp_");
++  udpKey.AppendInt(userContextId);
++  bool value = false;
++  if (!(RoverfoxStorageManager::GetBool(proxiedKey, value) && value)) {
++    value = false;
++    if (!(RoverfoxStorageManager::GetBool(u"webrtc_proxied_browser"_ns,
++                                          value) &&
++          value)) {
++      // No Juggler proxy: one from network.proxy.* relays UDP when it is SOCKS5.
++      return Preferences::GetInt("network.proxy.type", 0) == 1 &&
++             !Preferences::GetCString("network.proxy.socks").IsEmpty() &&
++             Preferences::GetInt("network.proxy.socks_version", 5) == 5;
++    }
++    udpKey.AssignLiteral(u"webrtc_proxy_udp_browser");
++  }
++  value = false;
++  return RoverfoxStorageManager::GetBool(udpKey, value) && value;
++}
++
+ /* static */ void
+ WebRTCIPManager::SetIPv4(uint32_t userContextId, const nsAString& ipv4) {
+   nsString key = IPv4KeyForUserContext(userContextId);
+diff --git a/dom/base/WebRTCIPManager.h b/dom/base/WebRTCIPManager.h
+--- a/dom/base/WebRTCIPManager.h
++++ b/dom/base/WebRTCIPManager.h
+@@ -52,6 +52,13 @@ public:
+    */
+   static bool IsProxied(uint32_t userContextId);
+ 
++  /**
++   * AliasMode: whether the proxy this user context reaches the network through
++   * may relay UDP (SOCKS5, webrtc-socks5-udp.patch). TargetRegistry.js records
++   * it next to IsProxied; a proxy from network.proxy.* counts when it is SOCKS5.
++   */
++  static bool ProxyRelaysUdp(uint32_t userContextId);
++
+   /**
+    * Mark the setWebRTCIPv4 function as used/disabled for a context.
+    * @param userContextId The user context ID
+diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+--- a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
++++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+@@ -4,8 +4,11 @@
+ 
+ #include "PeerConnectionImpl.h"
+ 
++#include <algorithm>
+ #include <cerrno>
++#include <cmath>
+ #include <cstdlib>
++#include <functional>
+ #include <set>
+ #include <sstream>
+ #include <vector>
+@@ -81,6 +84,9 @@
+ #include "mozilla/Preferences.h"
+ #include "mozilla/PublicSSL.h"
+ #include "mozilla/TimeStamp.h"
++#include "mozilla/dom/Performance.h"
++#include "mozilla/dom/PerformanceEntry.h"
++#include "mozilla/dom/PerformanceResourceTiming.h"
+ #include "mozilla/dom/BrowserChild.h"
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/Event.h"
+@@ -242,6 +248,8 @@ namespace mozilla {
+ // measured from real Firefox (constant across sessions). host UDP / host TCP.
+ static constexpr uint32_t kHostUdpPriority = 2122252543u;
+ static constexpr uint32_t kHostTcpPriority = 2105524479u;
++// AliasMode: stock's srflx priority, for the ICE agent behind the proxy.
++static constexpr uint32_t kSrflxPriority = 1686052863u;
+ 
+ void PeerConnectionAutoTimer::RegisterConnection() { mRefCnt++; }
+ 
+@@ -1814,12 +1822,19 @@ already_AddRefed<dom::Promise> PeerConnectionImpl::GetStats(
+   auto ipv6Opt = SpoofIP(true);
+   bool shouldSanitizeStats = ipv4Opt || ipv6Opt;
+   std::set<std::string> proxiedAddresses = mProxiedAddresses;
++  // AliasMode: behind a proxy without UDP the real agent has not gathered; the
++  // page sees the local candidates and state of the one it talks to (the ICE
++  // agent behind the proxy).
++  const bool fakeIce = mFakeIce;
++  const auto fakeIceState = mFakeIceState;
++  std::vector<FakeIceCandidateStat> fakeStats = mFakeIceStats;
+ 
+   GetStats(aSelector, false)
+       ->Then(
+           GetMainThreadSerialEventTarget(), __func__,
+           [promise, window = mWindow, shouldSanitizeStats, ipv4Opt, ipv6Opt,
+-           proxiedAddresses](
++           proxiedAddresses, fakeIce, fakeIceState,
++           fakeStats = std::move(fakeStats)](
+               UniquePtr<dom::RTCStatsReportInternal>&& aReport) {
+             // Camoufox: Sanitize IP addresses in stats before exposing to JS
+             if (shouldSanitizeStats && aReport) {
+@@ -1847,6 +1862,41 @@ already_AddRefed<dom::Promise> PeerConnectionImpl::GetStats(
+                 }
+               }
+             }
++            if (fakeIce && aReport) {
++              for (auto& transport : aReport->mTransportStats) {
++                if (transport.mIceState.WasPassed()) {
++                  transport.mIceState.Value() = fakeIceState;
++                } else {
++                  transport.mIceState.Construct(fakeIceState);
++                }
++              }
++              if (!aReport->mTransportStats.IsEmpty() &&
++                  aReport->mTransportStats[0].mId.WasPassed()) {
++                const nsString transportId =
++                    aReport->mTransportStats[0].mId.Value();
++                for (const auto& stat : fakeStats) {
++                  dom::RTCIceCandidateStats cand;
++                  cand.mType.Construct(dom::RTCStatsType::Local_candidate);
++                  cand.mTimestamp.Construct(aReport->mTimestamp);
++                  cand.mId.Construct(stat.mId);
++                  cand.mTransportId = transportId;
++                  cand.mAddress.Construct(stat.mAddress);
++                  cand.mPort.Construct(stat.mPort);
++                  cand.mProtocol.Construct(stat.mProtocol);
++                  cand.mCandidateType.Construct(stat.mType);
++                  cand.mPriority.Construct(int32_t(stat.mPriority));
++                  cand.mFoundation.Construct(stat.mFoundation);
++                  cand.mUsernameFragment.Construct(stat.mUfrag);
++                  if (stat.mTcp) {
++                    cand.mTcpType.Construct(dom::RTCIceTcpCandidateType::Active);
++                  }
++                  if (!aReport->mIceCandidateStats.AppendElement(cand,
++                                                                 fallible)) {
++                    mozalloc_handle_oom(0);
++                  }
++                }
++              }
++            }
+             RefPtr report = MakeRefPtr<RTCStatsReport>(window);
+             report->Incorporate(*aReport);
+             promise->MaybeResolve(std::move(report));
+@@ -3618,7 +3668,8 @@ void PeerConnectionImpl::NoteProxiedAddress(const std::string& aCandidate) {
+ }
+ 
+ std::string PeerConnectionImpl::SpoofCandidateIP(const std::string& candidate) {
+-  if (!ShouldSpoofCandidateIP() || candidate.empty()) {
++  // AliasMode: the agent behind the proxy only names addresses the page may see.
++  if (!ShouldSpoofCandidateIP() || candidate.empty() || mFakeIceDriving) {
+     return candidate;
+   }
+ 
+@@ -3838,6 +3889,469 @@ void PeerConnectionImpl::MaybeFabricateHostCandidates() {
+                               ObString(ufrag.c_str()), rv);
+ }
+ 
++// *****
++// AliasMode: the ICE agent behind a proxy without UDP
++// *****
++//
++// With the proxy enforced (media.peerconnection.ice.proxy_only) no UDP leaves
++// the machine around it, and a proxy without UDP (an HTTP proxy) relays none
++// (webrtc-socks5-udp.patch): the real agent would show a machine whose UDP is
++// blocked, with no srflx. It does not gather at all (EnsureIceGathering). The
++// page sees instead what stock Firefox on the identity's network shows, and
++// none of it sends a packet:
++// - host candidates under one mDNS name, the UDP one on a port the identity's
++//   OS would give, numbered as nICEr numbers them;
++// - per configured STUN/TURN server what such a server gives: a srflx with the
++//   proxy's address after a round trip from one that could answer, an
++//   icecandidateerror at once for loopback, after a failed lookup for a name
++//   that cannot resolve, and after nICEr's 11.1 s of retransmissions for an
++//   address that could not answer;
++// - end-of-candidates, then gathering complete, as nICEr signals them;
++// - those candidates in getStats(), and an ICE state of "new";
++// - checks that fail once a remote peer is set: 11.1 s after a remote
++//   candidate, or after the 5 s trickle grace period with none.
++
++namespace {
++
++// nICEr's STUN client sends 7 requests from a 100 ms RTO, doubling, then waits
++// 1600 ms more: a server that never answers fails 11.1 s after the first one.
++constexpr uint32_t kFakeIceStunTimeoutMs = 11100;
++// media.peerconnection.ice.trickle_grace_period: with no remote candidate,
++// checks fail this long after they could start.
++constexpr uint32_t kFakeIceGraceMs = 5000;
++
++uint32_t FakeIceJitter(uint32_t aMax) {
++  return static_cast<uint32_t>(mozilla::RandomUint64OrDie() % (aMax + 1));
++}
++
++// Runs aStep on the main thread at aDeadline. A timer may fire up to an eighth
++// of its delay late to be bundled with others, so this waits in steps of at
++// most 500 ms, each toward the same deadline, to end where nICEr's timers do.
++void FakeIceRunAt(TimeStamp aDeadline, std::function<void()>&& aStep) {
++  const double remaining = (aDeadline - TimeStamp::Now()).ToMilliseconds();
++  if (remaining <= 0) {
++    aStep();
++    return;
++  }
++  const uint32_t wait = static_cast<uint32_t>(std::ceil(std::min(remaining, 500.0)));
++  GetMainThreadSerialEventTarget()->DelayedDispatch(
++      NS_NewRunnableFunction("PeerConnectionImpl::FakeIceRunAt",
++                             [aDeadline, step = std::move(aStep)]() mutable {
++                               FakeIceRunAt(aDeadline, std::move(step));
++                             }),
++      wait);
++}
++
++enum class FakeServerOutcome { Answers, FailsAtOnce, FailsLookup, TimesOut };
++
++struct FakeIceServer {
++  std::string mUrl;  // as icecandidateerror reports it
++  // What nICEr tells servers apart by when it numbers candidates: the
++  // address; names are not resolved yet then, so all names count as one.
++  std::string mKey;
++  bool mTurn = false;
++  FakeServerOutcome mOutcome = FakeServerOutcome::TimesOut;
++  uint32_t mAtMs = 0;
++};
++
++// The UDP STUN and TURN servers of the configuration, in order, with what
++// each gives a host whose public address is the proxy's. aRoundTripMs is the
++// round trip through the proxy a STUN answer would take (0: unknown).
++std::vector<FakeIceServer> PlanFakeIceServers(
++    const RTCConfigurationInternal& aConfig, uint32_t aRoundTripMs) {
++  // A STUN answer comes one round trip after the request, from wherever the
++  // proxy is; a little more for the time a real exchange spends in sockets.
++  // Without a measurement, a nearby server's round trip.
++  const auto answerMs = [aRoundTripMs] {
++    if (!aRoundTripMs) {
++      return 12 + FakeIceJitter(48);
++    }
++    const uint32_t rtt = std::max<uint32_t>(aRoundTripMs, 8);
++    return rtt + FakeIceJitter(rtt / 10) + 1 + FakeIceJitter(4);
++  };
++  static const nsLiteralCString kSpecialUse[] = {
++      ".localhost"_ns, ".local"_ns, ".invalid"_ns,   ".test"_ns, ".example"_ns,
++      ".internal"_ns,  ".onion"_ns, ".home.arpa"_ns, ".alt"_ns};
++  std::vector<FakeIceServer> servers;
++  for (const auto& server : aConfig.mIceServers) {
++    for (const auto& url : server.mUrls) {
++      auto parsed =
++          IceServerParser::ParseStunTurnUri(NS_ConvertUTF16toUTF8(url));
++      if (parsed.isErr()) {
++        parsed.unwrapErr().SuppressException();
++        continue;
++      }
++      const auto& uri = parsed.inspect();
++      // A UDP gather uses UDP servers only.
++      if (uri.IsTls() || uri.mTransport != IceServerParser::IceTransport::Udp) {
++        continue;
++      }
++      nsAutoCString host(uri.mHost);
++      if (StringBeginsWith(host, "["_ns) && StringEndsWith(host, "]"_ns)) {
++        host = Substring(host, 1, host.Length() - 2);
++      }
++      FakeIceServer fake;
++      fake.mTurn = uri.IsTurn();
++      fake.mUrl = std::string(fake.mTurn ? "turn:" : "stun:") + uri.mHost.get() +
++                  ":" + std::to_string(uri.mPort);
++      net::NetAddr addr;
++      if (NS_SUCCEEDED(addr.InitFromString(host))) {
++        if (addr.raw.family == AF_INET6) {
++          // The host gathers on IPv4; nICEr skips a server of the other family.
++          continue;
++        }
++        fake.mKey = host.get();
++        if (addr.IsLoopbackAddr()) {
++          // A closed port on this machine answers with ICMP at once.
++          fake.mOutcome = FakeServerOutcome::FailsAtOnce;
++        } else if (addr.IsIPAddrAny() || addr.IsIPAddrLocal() ||
++                   addr.IsIPAddrShared()) {
++          fake.mOutcome = FakeServerOutcome::TimesOut;
++          fake.mAtMs = kFakeIceStunTimeoutMs + FakeIceJitter(15);
++        } else {
++          fake.mOutcome = FakeServerOutcome::Answers;
++          fake.mAtMs = answerMs();
++        }
++      } else {
++        ToLowerCase(host);
++        const nsAutoCString dotted("."_ns + host);
++        bool special = host.FindChar('.') < 0;
++        for (const auto& suffix : kSpecialUse) {
++          special |= StringEndsWith(dotted, suffix);
++        }
++        if (special) {
++          fake.mOutcome = FakeServerOutcome::FailsLookup;
++          fake.mAtMs = 2 + FakeIceJitter(10);
++        } else {
++          // Not resolved here: a lookup from this machine would reach its own
++          // resolver around the proxy.
++          // The name's lookup comes first.
++          fake.mOutcome = FakeServerOutcome::Answers;
++          fake.mAtMs = answerMs() + 2 + FakeIceJitter(10);
++        }
++      }
++      servers.push_back(std::move(fake));
++    }
++  }
++  return servers;
++}
++
++}  // namespace
++
++// The round trip through the proxy, as the page's own loads measured it: the
++// shortest TLS handshake (one round trip to a server through the proxy) or
++// wait for a first byte among the document and the resources whose timing the
++// page may read, leaving out those from the cache. 0 when there is no such
++// measurement, as for loads from the cache or from this machine.
++uint32_t PeerConnectionImpl::ProxyRoundTripMs() const {
++  if (!mWindow) {
++    return 0;
++  }
++  RefPtr<dom::Performance> performance = mWindow->GetPerformance();
++  Document* doc = mWindow->GetExtantDoc();
++  if (!performance || !doc) {
++    return 0;
++  }
++  nsIPrincipal& principal = *doc->NodePrincipal();
++  double best = 0;
++  const auto consider = [&best](double aMs) {
++    if (aMs >= 2 && (!best || aMs < best)) {
++      best = aMs;
++    }
++  };
++  for (const auto& type : {u"navigation"_ns, u"resource"_ns}) {
++    nsTArray<RefPtr<dom::PerformanceEntry>> entries;
++    performance->GetEntriesByType(type, entries);
++    for (const auto& entry : entries) {
++      const dom::PerformanceResourceTiming* timing = entry->ToResourceTiming();
++      if (!timing || !timing->TransferSize(principal)) {
++        continue;
++      }
++      const double secureStart = timing->SecureConnectionStart(principal);
++      const double connectEnd = timing->ConnectEnd(principal);
++      if (secureStart > 0 && connectEnd > secureStart) {
++        consider(connectEnd - secureStart);
++      }
++      const double requestStart = timing->RequestStart(principal);
++      const double responseStart = timing->ResponseStart(principal);
++      if (requestStart > 0 && responseStart > requestStart) {
++        consider(responseStart - requestStart);
++      }
++    }
++  }
++  return static_cast<uint32_t>(std::min(best, 2000.0));
++}
++
++void PeerConnectionImpl::DriveFakeIceState(dom::RTCIceTransportState aState) {
++  mFakeIceState = aState;
++  mFakeIceDriving = true;
++  IceConnectionStateChange(mFakeIceTransportId, aState, Nothing());
++  mFakeIceDriving = false;
++}
++
++void PeerConnectionImpl::DriveFakeGathering(dom::RTCIceGathererState aState) {
++  mFakeIceDriving = true;
++  IceGatheringStateChange(mFakeIceTransportId, aState);
++  mFakeIceDriving = false;
++}
++
++void PeerConnectionImpl::EmitFakeCandidate(const std::string& aCandidate,
++                                           const std::string& aUfrag) {
++  mFakeIceDriving = true;
++  CandidateReady(aCandidate, mFakeIceTransportId, aUfrag);
++  mFakeIceDriving = false;
++}
++
++// Whether this connection gets the ICE agent behind the proxy: behind an
++// enforced proxy that relays no UDP, with the identity's address to show.
++// aliasmode:webrtcFakeIce false leaves Camoufox's own behaviour, the host
++// candidates of a machine whose UDP is blocked.
++bool PeerConnectionImpl::UsesFakeIce() const {
++  if (!mForceProxy || !mWindow || !ShouldSpoofCandidateIP() ||
++      !MaskConfig::GetOptionalBool("aliasmode:webrtcFakeIce").value_or(true)) {
++    return false;
++  }
++  return !WebRTCIPManager::ProxyRelaysUdp(
++      dom::RoverfoxStorageManager::UserContextId(mWindow.get()));
++}
++
++void PeerConnectionImpl::StartFakeIce(const std::string& aTransportId) {
++  mFakeIce = true;
++  mFakeIceTransportId = aTransportId;
++  // Its own host candidates stand in for the ones Camoufox makes up.
++  mSurfacedHostCandidate = true;
++  FakeIceGather();
++  if (mIceChecksStarted) {
++    StartFakeIceChecks();
++  }
++}
++
++void PeerConnectionImpl::FakeIceGather() {
++  const std::string transportId = mFakeIceTransportId;
++  std::string ufrag;
++  mJsepSession->ForEachTransceiver([&](const JsepTransceiver& aTransceiver) {
++    if (ufrag.empty() &&
++        aTransceiver.mTransport.mTransportId == transportId) {
++      ufrag = aTransceiver.mTransport.mLocalUfrag;
++    }
++  });
++  auto ipv4 = SpoofIP(false);
++  auto ipv6 = SpoofIP(true);
++  const std::string publicIp = ipv4 ? *ipv4 : (ipv6 ? *ipv6 : std::string());
++  std::string uuid;
++  if (ufrag.empty() || publicIp.empty() || !mUuidGen ||
++      !mUuidGen->Generate(&uuid)) {
++    return;
++  }
++  // PCUuidGenerator yields "{uuid}"; the mDNS name is the bare uuid.
++  if (!uuid.empty() && uuid.front() == '{') uuid.erase(0, 1);
++  if (!uuid.empty() && uuid.back() == '}') uuid.pop_back();
++  const std::string mdnsHost = uuid + ".local";
++
++  const bool relayOnly = RelayOnly();
++  std::vector<FakeIceServer> servers =
++      PlanFakeIceServers(mJsConfiguration, ProxyRoundTripMs());
++  bool anyTurn = false;
++  for (const auto& server : servers) {
++    anyTurn |= server.mTurn;
++  }
++
++  // nICEr numbers candidates by kind and base, and server-derived ones also
++  // by server: host UDP, then per STUN server a srflx, per TURN server a
++  // srflx and a relay, then host TCP.
++  enum Kind { HostUdp, Srflx, Relay, HostTcp };
++  std::vector<std::pair<Kind, std::string>> foundations;
++  auto foundation = [&](Kind aKind, const std::string& aKey) {
++    for (size_t i = 0; i < foundations.size(); ++i) {
++      if (foundations[i].first == aKind && foundations[i].second == aKey) {
++        return std::to_string(i);
++      }
++    }
++    foundations.emplace_back(aKind, aKey);
++    return std::to_string(foundations.size() - 1);
++  };
++  const std::string hostUdpFoundation = foundation(HostUdp, "");
++  std::string srflxFoundation;
++  Maybe<uint32_t> srflxAt;
++  uint32_t endAt = 0;
++  for (const auto& server : servers) {
++    const std::string f = foundation(Srflx, server.mKey);
++    if (server.mTurn) {
++      foundation(Relay, server.mKey);
++    }
++    if (server.mOutcome == FakeServerOutcome::Answers && !relayOnly &&
++        (!srflxAt || server.mAtMs < *srflxAt)) {
++      srflxAt = Some(server.mAtMs);
++      srflxFoundation = f;
++    }
++    endAt = std::max(endAt, server.mAtMs);
++  }
++  const std::string hostTcpFoundation = foundation(HostTcp, "");
++
++  const auto os = dom::NavigatorManager::GetSpoofedOS(
++      dom::RoverfoxStorageManager::UserContextId(mWindow.get()));
++  const uint16_t port = MaskConfig::NextEphemeralPort(
++      MaskConfig::SpoofedEphemeralPorts(os).value_or(
++          std::pair<uint16_t, uint16_t>{32768, 60999}),
++      MaskConfig::SequentialEphemeralPorts(os), 2);
++  // nICEr binds the active TCP candidate itself, on a random port of
++  // 49152-65535; the candidate line says 9, getStats() the bound port.
++  const uint16_t tcpPort =
++      static_cast<uint16_t>(49152 + mozilla::RandomUint64OrDie() % 16384);
++  const nsString ufrag16 = NS_ConvertUTF8toUTF16(ufrag.c_str());
++  auto statsId = [] {
++    char id[9];
++    SprintfLiteral(id, "%x",
++                   static_cast<uint32_t>(mozilla::RandomUint64OrDie()));
++    return NS_ConvertASCIItoUTF16(id);
++  };
++
++  RefPtr<PeerConnectionImpl> self(this);
++  auto emitError = [self](const std::string& aUrl) {
++    IceCandidateErrorInfo info;
++    info.mUrl = aUrl;
++    info.mErrorCode = 701;
++    self->OnCandidateError(info);
++  };
++  const TimeStamp start = TimeStamp::Now();
++  auto later = [self, start](uint32_t aDelayMs, std::function<void()>&& aStep) {
++    FakeIceRunAt(start + TimeDuration::FromMilliseconds(aDelayMs),
++                 [self, step = std::move(aStep)]() {
++                   if (!self->IsClosed()) {
++                     step();
++                   }
++                 });
++  };
++
++  // An ICMP error for a server on this machine arrives before gathering shows.
++  for (const auto& server : servers) {
++    if (server.mOutcome == FakeServerOutcome::FailsAtOnce) {
++      emitError(server.mUrl);
++    }
++  }
++  // With relay only and no TURN server there is nothing to gather.
++  if (!relayOnly || anyTurn) {
++    DriveFakeGathering(dom::RTCIceGathererState::Gathering);
++  }
++  if (!relayOnly) {
++    std::ostringstream hostUdp;
++    hostUdp << "candidate:" << hostUdpFoundation << " 1 UDP "
++            << kHostUdpPriority << " " << mdnsHost << " " << port
++            << " typ host";
++    mFakeIceStats.push_back({statsId(), dom::RTCIceCandidateType::Host, NS_ConvertASCIItoUTF16("udp"),
++                             NS_ConvertUTF8toUTF16(mdnsHost.c_str()), port,
++                             kHostUdpPriority,
++                             NS_ConvertASCIItoUTF16(hostUdpFoundation.c_str()),
++                             false, ufrag16});
++    EmitFakeCandidate(hostUdp.str(), ufrag);
++
++    std::ostringstream hostTcp;
++    hostTcp << "candidate:" << hostTcpFoundation << " 1 TCP "
++            << kHostTcpPriority << " " << mdnsHost
++            << " 9 typ host tcptype active";
++    mFakeIceStats.push_back({statsId(), dom::RTCIceCandidateType::Host, NS_ConvertASCIItoUTF16("tcp"),
++                             NS_ConvertUTF8toUTF16(mdnsHost.c_str()), tcpPort,
++                             kHostTcpPriority,
++                             NS_ConvertASCIItoUTF16(hostTcpFoundation.c_str()),
++                             true, ufrag16});
++    EmitFakeCandidate(hostTcp.str(), ufrag);
++  }
++
++  if (srflxAt) {
++    std::ostringstream srflx;
++    srflx << "candidate:" << srflxFoundation << " 1 UDP " << kSrflxPriority
++          << " " << publicIp << " " << port << " typ srflx raddr 0.0.0.0 rport 0";
++    FakeIceCandidateStat stat{statsId(), dom::RTCIceCandidateType::Srflx,
++                              NS_ConvertASCIItoUTF16("udp"), NS_ConvertUTF8toUTF16(publicIp.c_str()),
++                              port, kSrflxPriority,
++                              NS_ConvertASCIItoUTF16(srflxFoundation.c_str()),
++                              false, ufrag16};
++    later(*srflxAt, [self, srflx = srflx.str(), stat, publicIp, port,
++                     transportId, ufrag]() {
++      // The srflx becomes the default candidate, as in stock's SDP.
++      self->mFakeIceDriving = true;
++      self->UpdateDefaultCandidate(publicIp, port, "", 0, transportId);
++      self->mFakeIceDriving = false;
++      // getStats() lists it after the host UDP candidate, as nICEr does.
++      auto& stats = self->mFakeIceStats;
++      stats.insert(stats.begin() + std::min<size_t>(1, stats.size()), stat);
++      self->EmitFakeCandidate(srflx, ufrag);
++    });
++  }
++
++  // Lookups and timeouts report their errors when they end; the last of them
++  // ends gathering, which reports end-of-candidates and then complete.
++  std::vector<std::string> errorsAtEnd;
++  for (const auto& server : servers) {
++    if (server.mOutcome != FakeServerOutcome::FailsLookup &&
++        server.mOutcome != FakeServerOutcome::TimesOut) {
++      continue;
++    }
++    if (server.mAtMs == endAt) {
++      errorsAtEnd.push_back(server.mUrl);
++    } else {
++      later(server.mAtMs, [emitError, url = server.mUrl]() { emitError(url); });
++    }
++  }
++  auto complete = [self, emitError, errorsAtEnd, ufrag]() {
++    for (const auto& url : errorsAtEnd) {
++      emitError(url);
++    }
++    self->EmitFakeCandidate("", ufrag);
++    self->DriveFakeGathering(dom::RTCIceGathererState::Complete);
++  };
++  if (endAt) {
++    later(endAt, std::move(complete));
++  } else {
++    complete();
++  }
++}
++
++void PeerConnectionImpl::StartFakeIceChecks() {
++  // A renegotiation keeps the checks of the first negotiation.
++  if (mFakeChecksStarted) {
++    return;
++  }
++  mFakeChecksStarted = true;
++  const std::string remote =
++      mJsepSession->GetRemoteDescription(kJsepDescriptionPendingOrCurrent);
++  if (remote.find("a=candidate:") != std::string::npos) {
++    DriveFakeIceState(dom::RTCIceTransportState::Checking);
++    ScheduleFakeIceFailure(kFakeIceStunTimeoutMs + FakeIceJitter(30));
++  } else {
++    ScheduleFakeIceFailure(kFakeIceGraceMs + FakeIceJitter(30));
++  }
++}
++
++void PeerConnectionImpl::FakeRemoteCandidate() {
++  if (!mFakeChecksStarted ||
++      mFakeIceState == dom::RTCIceTransportState::Failed) {
++    return;
++  }
++  if (mFakeIceState == dom::RTCIceTransportState::New) {
++    DriveFakeIceState(dom::RTCIceTransportState::Checking);
++  }
++  ScheduleFakeIceFailure(kFakeIceStunTimeoutMs + FakeIceJitter(30));
++}
++
++void PeerConnectionImpl::ScheduleFakeIceFailure(uint32_t aDelayMs) {
++  const uint32_t generation = ++mFakeFailGeneration;
++  RefPtr<PeerConnectionImpl> self(this);
++  FakeIceRunAt(
++      TimeStamp::Now() + TimeDuration::FromMilliseconds(aDelayMs),
++      [self, generation]() {
++        if (self->IsClosed() || generation != self->mFakeFailGeneration ||
++            self->mFakeIceState == dom::RTCIceTransportState::Failed) {
++          return;
++        }
++        self->DriveFakeIceState(dom::RTCIceTransportState::Failed);
++        // The transport is gone, and the data channels with it.
++        if (self->mDataConnection) {
++          self->mDataConnection->CloseAll();
++        }
++      });
++}
++
+ // Implements the steps to "change the selected candidate pair and state".
+ // https://w3c.github.io/webrtc-pc/#dfn-change-the-selected-candidate-pair-and-state
+ void PeerConnectionImpl::IceConnectionStateChange(
+@@ -3854,6 +4368,12 @@ void PeerConnectionImpl::IceConnectionStateChange(
+     return;
+   }
+ 
++  // AliasMode: behind a proxy without UDP only the ICE agent behind the proxy
++  // reaches the page (EnsureIceGathering).
++  if (mFakeIce && !mFakeIceDriving) {
++    return;
++  }
++
+   CSFLogDebug(LOGTAG, "IceConnectionStateChange: %s %d (%p)",
+               aTransportId.c_str(), static_cast<int>(domState), this);
+ 
+@@ -4159,6 +4679,10 @@ void PeerConnectionImpl::IceGatheringStateChange(
+     return;
+   }
+ 
++  if (mFakeIce && !mFakeIceDriving) {
++    return;
++  }
++
+   CSFLogDebug(LOGTAG, "IceGatheringStateChange: %s %d (%p)",
+               aTransportId.c_str(), static_cast<int>(state), this);
+ 
+@@ -5112,6 +5636,11 @@ void PeerConnectionImpl::StartIceChecks(const JsepSession& aSession) {
+     }
+   }
+ 
++  mIceChecksStarted = true;
++  if (mFakeIce) {
++    StartFakeIceChecks();
++  }
++
+   nsCOMPtr<nsIRunnable> runnable(
+       WrapRunnable(mTransportHandler, &MediaTransportHandler::StartIceChecks,
+                    aSession.IsIceControlling(), attributes));
+@@ -5164,6 +5693,10 @@ void PeerConnectionImpl::AddIceCandidate(const std::string& aCandidate,
+   MOZ_ASSERT(NS_IsMainThread());
+   MOZ_ASSERT(!aTransportId.empty());
+ 
++  if (mFakeIce && !aCandidate.empty()) {
++    FakeRemoteCandidate();
++  }
++
+   bool obfuscate_host_addresses = Preferences::GetBool(
+       "media.peerconnection.ice.obfuscate_host_addresses", false);
+ 
+@@ -5351,6 +5884,32 @@ void PeerConnectionImpl::EnsureIceGathering(bool aDefaultRouteOnly,
+     return;
+   }
+ 
++  // AliasMode: behind a proxy without UDP (an HTTP proxy) the real agent does
++  // not gather: the page sees the ICE agent behind the proxy instead, once,
++  // for the first transport, as a renegotiation keeps the first gather.
++  if (mFakeIce) {
++    return;
++  }
++  if (UsesFakeIce()) {
++    std::string transportId;
++    mJsepSession->ForEachTransceiver([&](const JsepTransceiver& aTransceiver) {
++      if (transportId.empty() && aTransceiver.HasOwnTransport()) {
++        transportId = aTransceiver.mTransport.mTransportId;
++      }
++    });
++    if (!transportId.empty()) {
++      mFakeIce = true;
++      GetMainThreadSerialEventTarget()->Dispatch(NS_NewRunnableFunction(
++          "PeerConnectionImpl::StartFakeIce",
++          [self = RefPtr<PeerConnectionImpl>(this), transportId]() {
++            if (!self->IsClosed()) {
++              self->StartFakeIce(transportId);
++            }
++          }));
++      return;
++    }
++  }
++
+   mTransportHandler->StartIceGathering(aDefaultRouteOnly,
+                                        aObfuscateHostAddresses, mStunAddrs);
+ }
+diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.h b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
+--- a/dom/media/webrtc/jsapi/PeerConnectionImpl.h
++++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
+@@ -641,6 +641,19 @@ class PeerConnectionImpl final
+   // surface the pair a real gather reports. Never a srflx, which only a STUN
+   // answer can produce.
+   void MaybeFabricateHostCandidates();
++  // AliasMode: the ICE agent a page sees behind a proxy without UDP; see
++  // "the ICE agent behind a proxy without UDP" in PeerConnectionImpl.cpp.
++  bool UsesFakeIce() const;
++  void StartFakeIce(const std::string& aTransportId);
++  void FakeIceGather();
++  void StartFakeIceChecks();
++  void FakeRemoteCandidate();
++  void ScheduleFakeIceFailure(uint32_t aDelayMs);
++  void DriveFakeIceState(dom::RTCIceTransportState aState);
++  void DriveFakeGathering(dom::RTCIceGathererState aState);
++  uint32_t ProxyRoundTripMs() const;
++  void EmitFakeCandidate(const std::string& aCandidate,
++                         const std::string& aUfrag);
+   void SendLocalIceCandidateToContent(uint16_t level, const std::string& mid,
+                                       const std::string& candidate,
+                                       const std::string& ufrag);
+@@ -747,6 +760,28 @@ class PeerConnectionImpl final
+   // the proxy's relay as a page's own STUN server saw it, or a TURN server's
+   // allocation: never this host's, and never the identity's address.
+   std::set<std::string> mProxiedAddresses;
++  // AliasMode: the ICE agent behind a proxy without UDP: on instead of the
++  // real one's gather; then only its own state changes reach the page.
++  bool mFakeIce = false;
++  bool mFakeIceDriving = false;
++  std::string mFakeIceTransportId;
++  dom::RTCIceTransportState mFakeIceState = dom::RTCIceTransportState::New;
++  bool mIceChecksStarted = false;
++  bool mFakeChecksStarted = false;
++  uint32_t mFakeFailGeneration = 0;
++  // Its local candidates as getStats() reports them, in stock's order.
++  struct FakeIceCandidateStat {
++    nsString mId;
++    dom::RTCIceCandidateType mType;
++    nsString mProtocol;
++    nsString mAddress;
++    uint16_t mPort;
++    uint32_t mPriority;
++    nsString mFoundation;
++    bool mTcp;
++    nsString mUfrag;
++  };
++  std::vector<FakeIceCandidateStat> mFakeIceStats;
+   Maybe<dom::RTCRtcpMuxPolicy> mRtcpMuxPolicy;
+   RefPtr<MediaTransportHandler> mTransportHandler;
+ 

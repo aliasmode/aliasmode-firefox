@@ -1,0 +1,62 @@
+AliasMode: a Windows identity binds its WebRTC UDP ports in sequence, as the
+Windows kernel hands out ephemeral ports, also on a macOS or Linux host.
+Needs MaskConfig::NextEphemeralPort (additions/camoucfg/MaskConfig.hpp).
+
+diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+--- a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
++++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp
+@@ -3695,12 +3695,12 @@ nsresult PeerConnectionImpl::SanitizeSDPForIPLeak(std::string& sdp) {
+ // ephemeral range of the OS the context presents; Linux's when no platform is
+ // configured.
+ static uint16_t RandomEphemeralPort(uint32_t aUserContextId) {
+-  const auto [lo, hi] =
+-      MaskConfig::SpoofedEphemeralPorts(
+-          dom::NavigatorManager::GetSpoofedOS(aUserContextId))
+-          .value_or(std::pair<uint16_t, uint16_t>{32768, 60999});
+-  uint32_t span = static_cast<uint32_t>(hi - lo) + 1u;
+-  return static_cast<uint16_t>(lo + (mozilla::RandomUint64OrDie() % span));
++  const auto os = dom::NavigatorManager::GetSpoofedOS(aUserContextId);
++  // AliasMode: in sequence where the OS's kernel hands ports out that way.
++  return MaskConfig::NextEphemeralPort(
++      MaskConfig::SpoofedEphemeralPorts(os).value_or(
++          std::pair<uint16_t, uint16_t>{32768, 60999}),
++      MaskConfig::SequentialEphemeralPorts(os));
+ }
+ 
+ // Extract the value of the first "<prefix><value>" line in an SDP (prefix like
+diff --git a/dom/media/webrtc/transport/nr_socket_prsock.cpp b/dom/media/webrtc/transport/nr_socket_prsock.cpp
+--- a/dom/media/webrtc/transport/nr_socket_prsock.cpp
++++ b/dom/media/webrtc/transport/nr_socket_prsock.cpp
+@@ -1817,6 +1817,7 @@ int NrSocketBase::CreateSocket(
+   int r, _status;
+   uint16_t port = 0;
+   std::optional<std::pair<uint16_t, uint16_t>> ports;
++  bool sequential = false;
+   // Camoufox: behind a proxy, stock Firefox refuses UDP outright, which leaves
+   // a page with no host candidate and no connection even to a peer on this
+   // machine. Make the socket, but let nothing it sends leave this host other
+@@ -1836,7 +1837,11 @@ int NrSocketBase::CreateSocket(
+   if (addr->protocol == IPPROTO_UDP &&
+       !nr_transport_addr_get_port(addr, &port) && port == 0) {
+     ports = MaskConfig::SpoofedEphemeralPorts();
+-    if (ports == kHostEphemeralPorts) {
++    // AliasMode: and in sequence where its kernel hands them out that way
++    // (Windows), so a Windows identity on macOS shows Windows ports too.
++    sequential = MaskConfig::SequentialEphemeralPorts();
++    if (ports == kHostEphemeralPorts &&
++        sequential == MaskConfig::HostSequentialEphemeralPorts()) {
+       ports.reset();
+     }
+   }
+@@ -1846,10 +1851,8 @@ int NrSocketBase::CreateSocket(
+     nr_transport_addr bindAddr;
+     nr_transport_addr_copy(&bindAddr, addr);
+     if (ports) {
+-      uint32_t span = static_cast<uint32_t>(ports->second - ports->first) + 1u;
+       nr_transport_addr_set_port(
+-          &bindAddr, ports->first + static_cast<int>(
+-                                        mozilla::RandomUint64OrDie() % span));
++          &bindAddr, MaskConfig::NextEphemeralPort(*ports, sequential));
+       nr_transport_addr_fmt_addr_string(&bindAddr);
+     }
+ 
