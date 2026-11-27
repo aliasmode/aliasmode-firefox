@@ -22,11 +22,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Browser releases only: library releases (vX.Y.Z) share the release list.
+          # Browser releases only: library releases (vX.Y.Z) share the release list. Drafts are
+          # not releases yet, and the highest version counts, not the newest created: a hotfix
+          # on an older line is published after the newer line.
           upstream_tag=$(gh api "repos/daijro/camoufox/releases?per_page=100" \
-            --jq '[.[] | select((.draft | not) and (.tag_name | test("^v[0-9]+(\\.[0-9]+)*-beta\\.[0-9]+$")))][0].tag_name')
+            --jq '.[] | select((.draft | not) and (.tag_name | test("^v[0-9]+(\\.[0-9]+)*-beta\\.[0-9]+$"))) | .tag_name' \
+            | sort -V | tail -n 1)
           ours_tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '[.[] | select(.tag_name | test("^aliasmode-runtime-[0-9]+(\\.[0-9]+)*-beta\\.[0-9]+-r[0-9]+$"))][0].tag_name')
+            --jq '.[] | select((.draft | not) and (.tag_name | test("^aliasmode-runtime-[0-9]+(\\.[0-9]+)*-beta\\.[0-9]+-r[0-9]+$"))) | .tag_name' \
+            | sort -V | tail -n 1)
           if [ -z "$upstream_tag" ] || [ -z "$ours_tag" ]; then
             echo "::error::Could not read the release tags (Camoufox: '${upstream_tag}', ours: '${ours_tag}')"
             exit 1
