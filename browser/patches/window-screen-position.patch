@@ -1,0 +1,149 @@
+AliasMode: window positions a page reads or sets are on the screen the
+identity claims.
+
+screen.availLeft/availTop can place the identity's screen elsewhere than the
+real one, for example on a second monitor at x=1920. window.screenX used to
+return the config's window.screenX whatever the window did, while
+mozInnerScreenX and MouseEvent.screenX reported the real screen, so a page saw
+the window's frame thousands of pixels away from its own content area.
+
+screenX/screenY now report the real window position shifted by the offset
+between the claimed and the real available area of the window's screen.
+mozInnerScreenX/Y and trusted pointer events get the same shift, and
+moveTo/moveBy take a position on the claimed screen. Chrome code and events a
+page builds itself keep their own coordinates.
+
+diff --git a/dom/base/nsGlobalWindowOuter.cpp b/dom/base/nsGlobalWindowOuter.cpp
+index 7f6ea88..bbdc867 100644
+--- a/dom/base/nsGlobalWindowOuter.cpp
++++ b/dom/base/nsGlobalWindowOuter.cpp
+@@ -3636,7 +3636,27 @@ CSSIntPoint nsGlobalWindowOuter::GetScreenXY(CallerType aCallerType,
+   aError = treeOwnerAsWin->GetPosition(&windowPos.x.value, &windowPos.y.value);
+ 
+   CSSToLayoutDeviceScale scale = CSSToDevScaleForBaseWindow(treeOwnerAsWin);
+-  return RoundedToInt(windowPos / scale);
++  CSSIntPoint position = RoundedToInt(windowPos / scale);
++  if (aCallerType != CallerType::System) {
++    position += ClaimedScreenOffset();
++  }
++  return position;
++}
++
++// Camoufox: screen.availLeft/availTop can claim a screen other than the real
++// one, such as a second monitor. Every position a page reads (screenX,
++// mozInnerScreenX, a pointer event's screenX) or sets (moveTo) is shifted by
++// this offset, so they agree with each other and with the claimed screen the
++// way they do on a real desktop. Chrome code keeps real positions.
++CSSIntPoint nsGlobalWindowOuter::ClaimedScreenOffset() {
++  RefPtr<nsScreen> screen = GetScreen();
++  nsDeviceContext* context = nsLayoutUtils::GetDeviceContextForScreenInfo(this);
++  if (!screen || !context) {
++    return {};
++  }
++  CSSIntPoint real =
++      CSSIntRect::FromAppUnitsRounded(context->GetClientRect()).TopLeft();
++  return CSSIntPoint(screen->AvailLeft(), screen->AvailTop()) - real;
+ }
+ 
+ int32_t nsGlobalWindowOuter::GetScreenXOuter(CallerType aCallerType,
+@@ -3713,7 +3733,11 @@ float nsGlobalWindowOuter::GetMozInnerScreenXOuter(CallerType aCallerType) {
+   }
+ 
+   nsRect r = GetInnerScreenRect();
+-  return nsPresContext::AppUnitsToFloatCSSPixels(r.x);
++  float x = nsPresContext::AppUnitsToFloatCSSPixels(r.x);
++  if (aCallerType != CallerType::System) {
++    x += ClaimedScreenOffset().x.value;
++  }
++  return x;
+ }
+ 
+ float nsGlobalWindowOuter::GetMozInnerScreenYOuter(CallerType aCallerType) {
+@@ -3724,7 +3748,11 @@ float nsGlobalWindowOuter::GetMozInnerScreenYOuter(CallerType aCallerType) {
+   }
+ 
+   nsRect r = GetInnerScreenRect();
+-  return nsPresContext::AppUnitsToFloatCSSPixels(r.y);
++  float y = nsPresContext::AppUnitsToFloatCSSPixels(r.y);
++  if (aCallerType != CallerType::System) {
++    y += ClaimedScreenOffset().y.value;
++  }
++  return y;
+ }
+ 
+ int32_t nsGlobalWindowOuter::GetScreenYOuter(CallerType aCallerType,
+@@ -3829,6 +3857,11 @@ void nsGlobalWindowOuter::CheckSecurityLeftAndTop(int32_t* aLeft, int32_t* aTop,
+           *aTop = screenTop + screenHeight - winRect.height;
+         if (screenTop > *aTop) *aTop = screenTop;
+       }
++      // Camoufox: that position is on the claimed screen (screen.availLeft),
++      // so the real window goes to the same place on the real one.
++      CSSIntPoint offset = ClaimedScreenOffset();
++      if (aLeft) *aLeft -= offset.x.value;
++      if (aTop) *aTop -= offset.y.value;
+     } else {
+       if (aLeft) *aLeft = 0;
+       if (aTop) *aTop = 0;
+@@ -5384,6 +5417,10 @@ void nsGlobalWindowOuter::MoveByOuter(int32_t aXDif, int32_t aYDif,
+ 
+   cssPos.x += aXDif;
+   cssPos.y += aYDif;
++  if (aCallerType != CallerType::System) {
++    // Camoufox: CheckSecurityLeftAndTop takes a position on the claimed screen.
++    cssPos += ClaimedScreenOffset();
++  }
+ 
+   CheckSecurityLeftAndTop(&cssPos.x.value, &cssPos.y.value, aCallerType);
+ 
+diff --git a/dom/base/nsGlobalWindowOuter.h b/dom/base/nsGlobalWindowOuter.h
+index 42a5a1d..ca530d6 100644
+--- a/dom/base/nsGlobalWindowOuter.h
++++ b/dom/base/nsGlobalWindowOuter.h
+@@ -576,6 +576,9 @@ class nsGlobalWindowOuter final : public mozilla::dom::EventTarget,
+   mozilla::dom::Selection* GetSelectionOuter();
+   already_AddRefed<mozilla::dom::Selection> GetSelection() override;
+   nsScreen* GetScreen();
++  // Camoufox: how far the available area a page sees (screen.availLeft/Top)
++  // sits from the real one of the screen this window is on, in CSS pixels.
++  mozilla::CSSIntPoint ClaimedScreenOffset();
+   void MoveToOuter(int32_t aXPos, int32_t aYPos,
+                    mozilla::dom::CallerType aCallerType,
+                    mozilla::ErrorResult& aError);
+diff --git a/dom/events/MouseEvent.cpp b/dom/events/MouseEvent.cpp
+index f310ed7..e04492a 100644
+--- a/dom/events/MouseEvent.cpp
++++ b/dom/events/MouseEvent.cpp
+@@ -11,7 +11,9 @@
+ #include "mozilla/StaticPrefs_dom.h"
+ #include "mozilla/ViewportUtils.h"
+ #include "nsContentUtils.h"
++#include "nsGlobalWindowOuter.h"
+ #include "nsIFrame.h"
++#include "nsIGlobalObject.h"
+ #include "nsIScreenManager.h"
+ #include "nsLayoutUtils.h"
+ 
+@@ -324,9 +326,22 @@ CSSDoublePoint MouseEvent::ScreenPoint(CallerType aCallerType) const {
+     return mUseFractionalCoords ? clientPoint : RoundedToInt(clientPoint);
+   }
+ 
+-  const CSSDoublePoint screenPoint =
++  CSSDoublePoint screenPoint =
+       Event::GetScreenCoords(mPresContext, mEvent, mWidgetOrScreenRelativePoint)
+           .extract();
++  // Camoufox: a real pointer is on the real screen; a page sees it on the
++  // screen it is told it has, as it sees window.screenX. An event the page
++  // built itself keeps the position it was given.
++  if (aCallerType != CallerType::System && IsTrusted()) {
++    nsIGlobalObject* global = GetParentObject();
++    nsPIDOMWindowInner* inner = global ? global->GetAsInnerWindow() : nullptr;
++    if (nsGlobalWindowOuter* outer =
++            inner ? nsGlobalWindowOuter::Cast(inner->GetOuterWindow())
++                  : nullptr) {
++      CSSIntPoint offset = outer->ClaimedScreenOffset();
++      screenPoint += CSSDoublePoint(offset.x.value, offset.y.value);
++    }
++  }
+   return mUseFractionalCoords ? screenPoint : RoundedToInt(screenPoint);
+ }
+ 

@@ -42,6 +42,12 @@
   { "property": "locale:script", "type": "str" },
   { "property": "locale:all", "type": "str" },
   { "property": "showcursor", "type": "bool" },
+  { "property": "audio:seed", "type": "uint" },
+  { "property": "aliasmode:windowLabel", "type": "str" },
+  { "property": "aliasmode:fontsDir", "type": "str" },
+  { "property": "aliasmode:canvasSeed", "type": "uint" },
+  { "property": "aliasmode:textSeed", "type": "uint" },
+  { "property": "aliasmode:webrtcFakeIce", "type": "bool" },
   { "property": "AudioContext:sampleRate", "type": "uint" },
   { "property": "AudioContext:outputLatency", "type": "double" },
   { "property": "AudioContext:maxChannelCount", "type": "uint" },
@@ -142,6 +148,5 @@
   { "property": "window.scrollMinY", "type": "int", "removed": "156.0.1-beta.32" },
   { "property": "disableTheming", "type": "bool", "removed": "156.0.1-beta.37" },
   { "property": "webGl:contextAttributes", "type": "dict", "removed": "156.0.1-beta.37" },
-  { "property": "webGl2:contextAttributes", "type": "dict", "removed": "156.0.1-beta.37" },
-  { "property": "audio:seed", "type": "uint", "removed": "158.0-beta.41" }
+  { "property": "webGl2:contextAttributes", "type": "dict", "removed": "156.0.1-beta.37" }
 ]

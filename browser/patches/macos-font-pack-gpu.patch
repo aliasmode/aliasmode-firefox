@@ -1,0 +1,19 @@
+AliasMode: on macOS, draw font pack faces in the GPU process from their data.
+
+diff --git a/gfx/2d/ScaledFontMac.cpp b/gfx/2d/ScaledFontMac.cpp
+--- a/gfx/2d/ScaledFontMac.cpp
++++ b/gfx/2d/ScaledFontMac.cpp
+@@ -398,6 +398,13 @@ bool UnscaledFontMac::GetFontDescriptor(FontDescriptorOutput aCb,
+   AutoRelease<CFURLRef> fontUrl(
+       (CFURLRef)CTFontCopyAttribute(ctFont, kCTFontURLAttribute));
+   if (fontUrl) {
++    // AliasMode: a face registered for this process only (Firefox's fonts/
++    // and the aliasmode:fontsDir font pack) cannot be found by name in the GPU
++    // process, which then draws its glyph IDs with another face. Without a
++    // descriptor the caller sends the font's data, as it does for a web font.
++    if (CTFontManagerGetScopeForURL(fontUrl) == kCTFontManagerScopeProcess) {
++      return false;
++    }
+     CFStringRef urlStr(CFURLCopyFileSystemPath(fontUrl, kCFURLPOSIXPathStyle));
+     cstr = CFStringGetCStringPtr(urlStr, kCFStringEncodingUTF8);
+     if (!cstr) {

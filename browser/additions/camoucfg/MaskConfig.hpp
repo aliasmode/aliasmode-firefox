@@ -13,7 +13,10 @@ Written by daijro.
 #include <cstdint>
 #include <optional>
 #include <codecvt>
+#include <atomic>
+#include <set>
 #include "mozilla/glue/Debug.h"
+#include "mozilla/RandomNum.h"
 #include <cstdlib>
 #include <cstdio>
 #include <mutex>
@@ -329,15 +332,23 @@ inline const std::vector<std::string>& FontAllowlist() {
 
 inline bool HasFontAllowlist() { return !FontAllowlist().empty(); }
 
+// AliasMode: the same list as a sorted set: font lookups and font fallback
+// consult it for every family they look at.
+inline const std::set<std::string, std::less<>>& FontAllowlistSet() {
+  static const std::set<std::string, std::less<>> fonts(
+      FontAllowlist().begin(), FontAllowlist().end());
+  return fonts;
+}
+
 /**
  * Whether a font family may be used. `family` must already be lowercased
  * (gfxPlatformFontList::GenerateFontListKey output is). Always true when no
  * allowlist is configured.
  */
 inline bool IsFontAllowed(std::string_view family) {
-  const auto& fonts = FontAllowlist();
+  const auto& fonts = FontAllowlistSet();
   if (fonts.empty()) return true;
-  return std::find(fonts.begin(), fonts.end(), family) != fonts.end();
+  return fonts.find(family) != fonts.end();
 }
 
 template <typename T>
@@ -467,6 +478,45 @@ inline std::optional<std::pair<uint16_t, uint16_t>> SpoofedEphemeralPorts(
     default:
       return std::nullopt;
   }
+}
+
+// AliasMode: whether an OS's kernel hands out ephemeral UDP ports in sequence
+// (Windows) rather than at random (macOS, and Linux with its default range).
+inline bool SequentialEphemeralPorts(SpoofedOS aOS = GetSpoofedOS()) {
+  return aOS == SpoofedOS::Windows;
+}
+
+inline constexpr bool HostSequentialEphemeralPorts() {
+#if defined(XP_WIN)
+  return true;
+#else
+  return false;
+#endif
+}
+
+// AliasMode: the first of aCount ports a kernel would give sockets bound one
+// after another, in aRange. At random, or in sequence: one counter per process
+// starts at a random point of the range, and now and then a port is skipped,
+// as other programs on the machine take some in between.
+inline uint16_t NextEphemeralPort(std::pair<uint16_t, uint16_t> aRange,
+                                  bool aSequential, uint32_t aCount = 1) {
+  const uint32_t span = uint32_t(aRange.second - aRange.first) + 1u;
+  if (!aSequential) {
+    return uint16_t(aRange.first + mozilla::RandomUint64OrDie() % span);
+  }
+  static std::atomic<uint32_t> sNext{0};
+  uint32_t offset = sNext.load();
+  uint32_t next;
+  do {
+    uint32_t start =
+        offset ? offset - 1 : uint32_t(mozilla::RandomUint64OrDie() % span);
+    const uint32_t skip = mozilla::RandomUint64OrDie() % 8 == 0 ? 1 : 0;
+    start = (start + skip) % span;
+    next = (start + aCount) % span + 1;
+    if (sNext.compare_exchange_weak(offset, next)) {
+      return uint16_t(aRange.first + start);
+    }
+  } while (true);
 }
 
 inline std::optional<std::array<uint32_t, 4>> GetRect(std::string_view left,

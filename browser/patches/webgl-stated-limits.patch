@@ -1,0 +1,62 @@
+diff --git a/dom/canvas/WebGLContextValidate.cpp b/dom/canvas/WebGLContextValidate.cpp
+--- a/dom/canvas/WebGLContextValidate.cpp
++++ b/dom/canvas/WebGLContextValidate.cpp
+@@ -7,6 +7,7 @@
+ #include "CanvasUtils.h"
+ #include "GLContext.h"
+ #include "GLSLANG/ShaderLang.h"
++#include "MaskConfig.hpp"
+ #include "WebGLBuffer.h"
+ #include "WebGLContext.h"
+ #include "WebGLContextUtils.h"
+@@ -477,6 +478,50 @@
+     }
+   }
+ 
++  // The identity's stated limits (webGl:parameters, webGl2:parameters) bind
++  // like the restrictions above, so a page that probes past a stated limit
++  // gets the error the stated GPU gives. Hardware below a stated limit keeps
++  // its own.
++  {
++    const bool webgl2 = IsWebGL2();
++    const char* const table = webgl2 ? "webGl2:parameters" : "webGl:parameters";
++    const auto restrict = [&](GLenum aPName, uint32_t* aCap) {
++      const auto value = MaskConfig::GetNested(table, std::to_string(aPName));
++      int64_t stated = 0;
++      if (value && value->is_number_integer()) {
++        stated = value->get<int64_t>();
++      } else if (value && value->is_array() && value->size() == 2 &&
++                 (*value)[0].is_number_integer() &&
++                 (*value)[1].is_number_integer()) {
++        stated = std::min((*value)[0].get<int64_t>(),
++                          (*value)[1].get<int64_t>());
++      }
++      if (stated > 0 && stated < int64_t(*aCap)) {
++        *aCap = uint32_t(stated);
++      }
++    };
++    restrict(LOCAL_GL_MAX_TEXTURE_SIZE, &limits.maxTex2dSize);
++    restrict(LOCAL_GL_MAX_CUBE_MAP_TEXTURE_SIZE, &limits.maxTexCubeSize);
++    restrict(LOCAL_GL_MAX_RENDERBUFFER_SIZE, &mGLMaxRenderbufferSize);
++    restrict(LOCAL_GL_MAX_VIEWPORT_DIMS, &limits.maxViewportDim);
++    restrict(LOCAL_GL_MAX_VERTEX_ATTRIBS, &limits.maxVertexAttribs);
++    restrict(LOCAL_GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &limits.maxTexUnits);
++    restrict(LOCAL_GL_MAX_TEXTURE_IMAGE_UNITS,
++             &mGLMaxFragmentTextureImageUnits);
++    restrict(LOCAL_GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS,
++             &mGLMaxVertexTextureImageUnits);
++    restrict(LOCAL_GL_MAX_VERTEX_UNIFORM_VECTORS, &mGLMaxVertexUniformVectors);
++    restrict(LOCAL_GL_MAX_FRAGMENT_UNIFORM_VECTORS,
++             &mGLMaxFragmentUniformVectors);
++    restrict(LOCAL_GL_MAX_VARYING_VECTORS, &mGLMaxVertexOutputVectors);
++    restrict(LOCAL_GL_MAX_VARYING_VECTORS, &mGLMaxFragmentInputVectors);
++    if (webgl2) {
++      restrict(LOCAL_GL_MAX_3D_TEXTURE_SIZE, &limits.maxTex3dSize);
++      restrict(LOCAL_GL_MAX_ARRAY_TEXTURE_LAYERS, &limits.maxTexArrayLayers);
++      restrict(LOCAL_GL_MAX_DRAW_BUFFERS, &limits.maxColorDrawBuffers);
++    }
++  }
++
+   mLimits = Some(limits);
+ 
+   ////////////////

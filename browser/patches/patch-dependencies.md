@@ -57,6 +57,30 @@ be listed there.
 
 To regenerate the list: `grep -l 'MaskConfig::' patches/*.patch`.
 
+### AliasMode patches
+
+AliasMode carries these on top of the Camoufox series. Each rebase applies the
+series, fixes rejects and runs the guards. The `zz-` ones sort after the
+upstream patches because their context is the fully patched tree.
+
+| Patch | Config keys and dependencies |
+|-------|------------------------------|
+| `canvas-readback-noise.patch` | `aliasmode:canvasSeed` (adds `dom/canvas/AliasModeReadbackNoise.h`). With a seed, the canvas placeholder targets (`CanvasImageExtractionPrompt`, `CanvasExtractionBeforeUserInputIsBlocked`, `CanvasExtractionFromThirdPartiesIsBlocked`) are off, so one canvas scheme runs per profile |
+| `stable-browsing-session-key.patch` | `aliasmode:canvasSeed` (the fingerprinting randomization session key, which keys the toDataURL `deBG` chunk) |
+| `zz-webgl-readback-noise.patch` | `aliasmode:canvasSeed` (WebGL `readPixels`; needs `canvas-readback-noise.patch` and `webgl-spoofing.patch`) |
+| `glyph-advance-noise.patch` | `aliasmode:textSeed` (per font, keyed by the font's PostScript name) |
+| `font-pack-dir.patch` | `aliasmode:fontsDir` (a font pack directory activated with the bundled `fonts/`; needs `font-hijacker.patch`) |
+| `macos-font-pack-gpu.patch` | (macOS: a process-scoped font, from `fonts/` or `aliasmode:fontsDir`, goes to the GPU process as data) |
+| `web-font-lookups.patch` | (hides dot-prefixed families from pages; needs `font-hijacker.patch`) |
+| `webgl-stated-limits.patch` | `webGl:parameters`, `webGl2:parameters` (read where the WebGL context runs, so a stated limit binds) |
+| `window-screen-position.patch` | `screen.availLeft`, `screen.availTop` (window and pointer positions on the claimed screen) |
+| `focus-events-stock.patch` | (no key; Playwright's focus events in an inactive window only with the pref `aliasmode.focus.emulate_active_window`) |
+| `tab-layout-repair.patch` | (CustomizableUI migration step 29) |
+| `zz-audio-fingerprint-manager.patch` | `audio:seed` (AliasMode's copy of the Camoufox patch upstream dropped in 159) |
+| `zz-audio-noise-on-copy.patch` | `audio:seed` (needs `zz-audio-fingerprint-manager.patch`) |
+| `zzz-webrtc-ice-fallback.patch` | `webrtc:ipv4`, `webrtc:ipv6`, `aliasmode:webrtcFakeIce`, `navigator.platform` (the ICE agent a page sees behind a proxy without UDP; needs `webrtc-socks5-udp.patch`, `zz-webrtc-proxied-context.patch` and `webrtc_proxy_udp_*` from `additions/juggler/TargetRegistry.js`) |
+| `zzz-webrtc-port-sequence.patch` | `navigator.platform` (a Windows identity binds WebRTC ports in sequence; needs `MaskConfig::NextEphemeralPort`) |
+
 ### Includes another patch provides
 
 Some patches call MaskConfig from a file or directory that an earlier patch
