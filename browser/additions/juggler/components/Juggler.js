@@ -20,11 +20,10 @@ const Ci = Components.interfaces;
 // Camoufox: everything Juggler changes in a page is installed only once a
 // driver is attached (-juggler-pipe). Its frame actor turns off every
 // top-level docShell's bfcache.
-// focusmanager.testmode belongs to the driver too: it keeps a window that
-// loses focus to another window or a native dialog from being lowered, which a
-// page reads as the missing blur (stock's default is false).
+// AliasMode: focusmanager.testmode stays stock's false with a driver too. It
+// keeps a window that loses focus to another window or a native dialog from
+// being lowered, which a page reads as the missing blur.
 function installDriverOverrides() {
-  Services.prefs.getDefaultBranch("").setBoolPref("focusmanager.testmode", true);
   // Juggler follows frames within one content process: keep cross-site iframes in their
   // parent's process. A browser nobody drives keeps Firefox's isolation, which a page can tell.
   Services.prefs.getDefaultBranch("").setIntPref("fission.webContentIsolationStrategy", 0);
@@ -97,10 +96,14 @@ export class Juggler {
         installDriverOverrides();
 
         this._silent = cmdLine.findFlag('silent', false) >= 0;
-        if (this._silent) {
+        // AliasMode: with this pref a persistent launch outlives its last
+        // window on Windows and Linux too, as Firefox does on macOS, so the app
+        // can save the profile before it stops the browser with Browser.close.
+        this._keepAlive = this._silent || Services.prefs.getBoolPref('aliasmode.keepAliveWithoutWindows', false);
+        if (this._keepAlive)
           Services.startup.enterLastWindowClosingSurvivalArea();
+        if (this._silent)
           browserStartupFinishedCallback();
-        }
         Services.obs.addObserver(this, "final-ui-startup");
         break;
       case "browser-idle-startup-tasks-finished":
@@ -110,7 +113,7 @@ export class Juggler {
       case "final-ui-startup":
         Services.obs.removeObserver(this, topic);
 
-        const targetRegistry = new TargetRegistry({ lastWindowQuits: !this._silent });
+        const targetRegistry = new TargetRegistry({ lastWindowQuits: !this._keepAlive });
         new NetworkObserver(targetRegistry);
 
         const loadStyleSheet = () => {
@@ -155,7 +158,7 @@ export class Juggler {
         pipe.init(connection);
         const dispatcher = new Dispatcher(connection);
         browserHandler = new BrowserHandler(dispatcher.rootSession(), dispatcher, targetRegistry, browserStartupFinishedPromise, () => {
-          if (this._silent)
+          if (this._keepAlive)
             Services.startup.exitLastWindowClosingSurvivalArea();
           connection.onclose();
           pipe.stop();

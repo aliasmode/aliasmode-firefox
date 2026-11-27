@@ -8,6 +8,7 @@ const {Preferences} = ChromeUtils.importESModule("resource://gre/modules/Prefere
 const {ContextualIdentityService} = ChromeUtils.importESModule("moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs");
 const {NetUtil} = ChromeUtils.importESModule('resource://gre/modules/NetUtil.sys.mjs');
 const {AppConstants} = ChromeUtils.importESModule("resource://gre/modules/AppConstants.sys.mjs");
+const {HiddenFrame} = ChromeUtils.importESModule("resource://gre/modules/HiddenFrame.sys.mjs");
 // This module's scope has no timer globals (unlike the content-side juggler
 // scripts), so the screencast tick has to import them explicitly.
 const {setTimeout, clearTimeout} = ChromeUtils.importESModule("resource://gre/modules/Timer.sys.mjs");
@@ -104,8 +105,11 @@ function withProxyAuth(proxy, auth) {
 
 // Camoufox: WebRTC must not gather around a Juggler proxy, which is not in
 // network.proxy.*. WebRTCIPManager::IsProxied reads this in the content process.
-function recordProxied(owner) {
+function recordProxied(owner, proxy) {
   Services.prefs.getDefaultBranch('roverfox.s.').setCharPref(`webrtc_proxied_${owner}`, '1');
+  // AliasMode: whether the proxy may relay UDP (SOCKS5). WebRTC behind one that
+  // cannot gets the ICE agent behind the proxy (zzz-webrtc-ice-fallback.patch).
+  Services.prefs.getDefaultBranch('roverfox.s.').setCharPref(`webrtc_proxy_udp_${owner}`, proxy?.type === 'socks' ? '1' : '0');
   // Firefox turns prefetch off at its first proxied load. A document with no
   // load yet (about:blank, a fulfilled route) would resolve its dns-prefetch
   // links on this machine's resolver until then.
@@ -288,7 +292,10 @@ export class TargetRegistry {
         // exited -- 15-60 MB of parent RSS apiece, growing without bound across
         // repeated crashes (#762's scraper). Deferred so the tab is not torn
         // down inside Gecko's own crash notification.
-        setTimeout(() => this._closeCrashedTab(target), 0);
+        if (!target._gBrowser)
+          browser.remove();
+        else
+          setTimeout(() => this._closeCrashedTab(target), 0);
       }
     }, 'oop-frameloader-crashed');
 
@@ -331,6 +338,35 @@ export class TargetRegistry {
     };
 
     const domWindowTabListeners = new Map();
+    const sessionGeneration = Services.env.get('ALIASMODE_FIREFOX_SESSION_GENERATION');
+    const sessionFile = Services.dirsvc.get('ProfD', Ci.nsIFile);
+    sessionFile.append('aliasmode-session-tabs.json');
+    let quitting = false;
+    const userWindows = () => [...Services.wm.getEnumerator('navigator:browser')].filter(window =>
+      !window.closed && window.gBrowser && !window.docShell.usePrivateBrowsing &&
+      [...window.gBrowser.tabs].some(tab => tab.userContextId === 0));
+    const saveTabs = windows => {
+      if (!sessionGeneration || !windows.length)
+        return;
+      const tabs = windows.flatMap(window => [...window.gBrowser.tabs]
+        .filter(tab => tab.userContextId === 0)
+        .map(tab => tab.linkedBrowser.currentURI.spec));
+      const stream = Cc['@mozilla.org/network/safe-file-output-stream;1'].createInstance(Ci.nsIFileOutputStream);
+      try {
+        stream.init(sessionFile, 0x02 | 0x08 | 0x20, 0o600, 0);
+        const output = Cc['@mozilla.org/binaryoutputstream;1'].createInstance(Ci.nsIBinaryOutputStream);
+        output.setOutputStream(stream);
+        output.writeByteArray(new TextEncoder().encode(JSON.stringify({ generation: sessionGeneration, tabs })));
+        stream.QueryInterface(Ci.nsISafeOutputStream).finish();
+      } catch {
+        try { stream.close(); } catch {}
+        dump('WARNING: AliasMode could not save closing tabs\n');
+      }
+    };
+    Services.obs.addObserver(() => {
+      quitting = true;
+      saveTabs(userWindows());
+    }, 'quit-application-granted');
 
     const onOpenWindow = async (appWindow) => {
       let domWindow;
@@ -342,10 +378,8 @@ export class TargetRegistry {
       }
       if (!domWindow.isChromeWindow)
         return;
-      // Firefox deactivates a fully occluded or minimized window, which drops its
-      // pages onto a refresh timer that doubles each tick and stops after 600s, so
-      // anything awaiting a frame, such as Playwright's mouse.wheel, hangs (#804).
-      domWindow.browsingContext.forceAppWindowActive = true;
+      // AliasMode: no forceAppWindowActive. A covered or minimized window is
+      // deactivated and its pages throttled, as in stock Firefox.
       // In persistent mode, window might be opened long ago and might be
       // already initialized.
       //
@@ -374,6 +408,10 @@ export class TargetRegistry {
       }
       if (!domWindow.gBrowser)
         return;
+      if (sessionGeneration && !domWindow.docShell.usePrivateBrowsing &&
+          [...domWindow.gBrowser.tabs].some(tab => tab.userContextId === 0)) {
+        try { sessionFile.remove(false); } catch {}
+      }
       const tabContainer = domWindow.gBrowser.tabContainer;
       domWindowTabListeners.set(domWindow, [
         helper.addEventListener(tabContainer, 'TabOpen', event => onTabOpenListener(appWindow, domWindow, event)),
@@ -390,6 +428,10 @@ export class TargetRegistry {
       if (!domWindow.gBrowser)
         return;
 
+      if (!quitting && !domWindow.docShell.usePrivateBrowsing &&
+          [...domWindow.gBrowser.tabs].some(tab => tab.userContextId === 0) &&
+          userWindows().every(window => window === domWindow))
+        saveTabs([domWindow]);
       const listeners = domWindowTabListeners.get(domWindow) || [];
       domWindowTabListeners.delete(domWindow);
       helper.removeListeners(listeners);
@@ -449,7 +491,7 @@ export class TargetRegistry {
 
   setBrowserProxy(proxy) {
     this._browserProxy = withProxyAuth(proxy, this._launchProxyAuth);
-    recordProxied('browser');
+    recordProxied('browser', proxy);
     this._updateProxiesWithSameAuthCacheAndDifferentCredentials();
   }
 
@@ -489,10 +531,48 @@ export class TargetRegistry {
     target.closeCrashedTab();
   }
 
-  async newPage({browserContextId}) {
-    const result = globalNewPageChain.then(() => this._newPageInternal({browserContextId}));
+  async newPage({browserContextId, hidden}) {
+    const result = globalNewPageChain.then(() => hidden
+      ? this._newHiddenPage({browserContextId})
+      : this._newPageInternal({browserContextId}));
     globalNewPageChain = result.catch(error => { /* swallow errors to keep chain running */ });
     return result;
+  }
+
+  // Storage helpers must stay windowless even after the last user window closes.
+  async _newHiddenPage({browserContextId}) {
+    const browserContext = this.browserContextForId(browserContextId);
+    this._hiddenFrame ||= new HiddenFrame();
+    const window = await this._hiddenFrame.get();
+    const browser = window.document.createXULElement('browser');
+    browser.setAttribute('type', 'content');
+    browser.setAttribute('remote', 'true');
+    browser.setAttribute('maychangeremoteness', 'true');
+    browser.setAttribute('nodefaultsrc', 'true');
+    browser.setAttribute('disableglobalhistory', 'true');
+    browser.setAttribute('usercontextid', browserContext.userContextId);
+    browser.style.width = '1024px';
+    browser.style.height = '768px';
+    let target;
+    try {
+      window.document.documentElement.appendChild(browser);
+      target = new PageTarget(this, window, { linkedBrowser: browser }, browserContext);
+      target.updateOverridesForBrowsingContext();
+      browser.loadURI(Services.io.newURI('about:blank'), {
+        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+      });
+      if (browserContext.crossProcessCookie.settings.timezoneId) {
+        if (await target.hasFailedToOverrideTimezone())
+          throw new Error('Failed to override timezone');
+      }
+      return target.id();
+    } catch (error) {
+      if (target)
+        target.close();
+      else
+        browser.remove();
+      throw error;
+    }
   }
 
   async _newPageInternal({browserContextId}) {
@@ -650,6 +730,8 @@ export class PageTarget {
   }
 
   async activateAndRun(callback = () => {}, { muteNotificationsPopup = false } = {}) {
+    if (!this._gBrowser)
+      return callback();
     // Firefox 152 renamed `ownerGlobal` to `documentGlobal` on nodes.
     const ownerWindow = this._tab.linkedBrowser.documentGlobal || this._tab.linkedBrowser.ownerGlobal;
     const tabBrowser = ownerWindow.gBrowser;
@@ -741,7 +823,8 @@ export class PageTarget {
   }
 
   async windowReady() {
-    await waitForWindowReady(this._window);
+    if (this._gBrowser)
+      await waitForWindowReady(this._window);
   }
 
   linkedBrowser() {
@@ -829,7 +912,7 @@ export class PageTarget {
   }
 
   _updateModalDialogs() {
-    const prompts = new Set(this._linkedBrowser.tabDialogBox.getContentDialogManager().dialogs.map(dialog => dialog.frameContentWindow.Dialog));
+    const prompts = new Set(this._linkedBrowser.tabDialogBox?.getContentDialogManager().dialogs.map(dialog => dialog.frameContentWindow.Dialog));
     for (const dialog of this._dialogs.values()) {
       if (!prompts.has(dialog.prompt())) {
         this._dialogs.delete(dialog.id());
@@ -848,9 +931,19 @@ export class PageTarget {
   }
 
   async updateViewportSize() {
-    await waitForWindowReady(this._window);
+    await this.windowReady();
     this.updateDPPXOverride();
     this.updateMobileEmulation();
+    if (!this._gBrowser) {
+      const viewport = this._viewportSize || this._browserContext.defaultViewportSize;
+      if (viewport) {
+        this._linkedBrowser.style.width = viewport.width + 'px';
+        this._linkedBrowser.style.height = viewport.height + 'px';
+      }
+      const {width, height} = this._linkedBrowser.getBoundingClientRect();
+      await this._channel.connect('').send('awaitViewportDimensions', { width: width / this._zoom, height: height / this._zoom });
+      return;
+    }
 
     // Viewport size is defined by three arguments:
     // 1. default size. Could be explicit if set as part of `window.open` call, e.g.
@@ -967,6 +1060,12 @@ export class PageTarget {
   }
 
   close(runBeforeUnload = false) {
+    if (!this._gBrowser) {
+      if (!this._disposed)
+        this.dispose();
+      this._linkedBrowser.remove();
+      return;
+    }
     this._gBrowser.removeTab(this._tab, {
       skipPermitUnload: !runBeforeUnload,
     });
@@ -1450,7 +1549,7 @@ class BrowserContext {
     // Clear AuthCache.
     Services.obs.notifyObservers(null, "net:clear-active-logins");
     this._proxy = withProxyAuth(proxy, this._proxyAuth);
-    recordProxied(this.userContextId);
+    recordProxied(this.userContextId, proxy);
     this._registry._updateProxiesWithSameAuthCacheAndDifferentCredentials();
   }
 

@@ -130,8 +130,8 @@ export class BrowserHandler {
     await this._targetRegistry.cancelDownload({uuid});
   }
 
-  async ['Browser.newPage']({browserContextId}) {
-    const targetId = await this._targetRegistry.newPage({browserContextId});
+  async ['Browser.newPage']({browserContextId, hidden}) {
+    const targetId = await this._targetRegistry.newPage({browserContextId, hidden});
     return {targetId};
   }
 
@@ -191,6 +191,11 @@ export class BrowserHandler {
 
   ['Browser.setRequestInterception']({browserContextId, enabled}) {
     this._targetRegistry.browserContextForId(browserContextId).requestInterceptionEnabled = enabled;
+  }
+
+  // AliasMode: see NETWORK_DETAIL_PREF in NetworkObserver.js and content/FrameTree.js.
+  ['Browser.setNetworkDetail']({enabled}) {
+    Services.prefs.setBoolPref('juggler.networkDetail', enabled);
   }
 
   ['Browser.setCacheDisabled']({browserContextId, cacheDisabled}) {

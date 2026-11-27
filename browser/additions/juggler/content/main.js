@@ -68,16 +68,12 @@ export function initialize(browsingContext, docShell) {
   const contextCrossProcessCookie = Services.cpmm.sharedData.get('juggler:context-cookie-' + browsingContext.originAttributes.userContextId) || { initScripts: [], bindings: [], settings: {} };
   const pageCrossProcessCookie = Services.cpmm.sharedData.get('juggler:page-cookie-' + browsingContext.browserId) || { initScripts: [], bindings: [], interceptFileChooserDialog: false };
 
-  // Camoufox: a driven page stays focused and active, even when another
-  // window or tab is in front. This is deliberate, not stock: the product
-  // wants every page a caller opens to behave as if a person is looking at
-  // it, so parallel pages do not lose focus or throttling. It is page-visible
-  // (document.hasFocus(), visibilityState, blur);
-  // see ci/tribal-rules.yml, driven-pages-stay-focused. Juggler's own OS input
-  // path still raises the selected tab through activateAndRun where the OS
-  // needs it.
-  docShell.overrideHasFocus = true;
-  docShell.forceActiveState = true;
+  // AliasMode: no focus or activity emulation. Playwright's
+  // docShell.overrideHasFocus made document.hasFocus() true and suppressed
+  // blur on every page at once, and forceActiveState kept background tabs
+  // visible and unthrottled; stock Firefox does neither (daijro/camoufox#855).
+  // Input commands still activate the page's tab and window first
+  // (PageTarget.activateAndRun), as a person's click or keystroke does.
   // A page reads this back: after a scripted same-origin `location.href = ...`
   // and `history.back()` -- no gesture, no permission -- stock Firefox 152.0.4
   // fires pageshow with persisted=true and does not re-run the document's

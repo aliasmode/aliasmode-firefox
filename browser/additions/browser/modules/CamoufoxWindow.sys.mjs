@@ -141,6 +141,126 @@ function applyWindowPosition(win) {
   win.addEventListener("MozAfterPaint", place);
 }
 
+// The available area of the screen the identity claims, as a page reads it.
+// Outside fullscreen a real window is never larger than the available area of
+// its screen. Stock's baseline fingerprinting protection derives that area from
+// the screen size: less 48px on Windows and 76px on macOS.
+function claimedAvailSize() {
+  const width = ChromeUtils.camouGetInt("screen.width");
+  const height = ChromeUtils.camouGetInt("screen.height");
+  if (!width || !height) {
+    return null;
+  }
+  const platform = ChromeUtils.camouGetString("navigator.platform") || "";
+  const offset = platform.startsWith("Win") ? 48 : platform.startsWith("Mac") ? 76 : 0;
+  return { width, height: height - offset };
+}
+
+// The real available area of the screen the window is on. window.screen
+// reports the claimed screen, also to chrome code.
+function realAvailRect(win) {
+  const screen = Cc["@mozilla.org/gfx/screenmanager;1"]
+    .getService(Ci.nsIScreenManager)
+    .screenForRect(win.screenX, win.screenY, win.outerWidth, win.outerHeight);
+  const [x, y, width, height] = [{}, {}, {}, {}];
+  screen.GetAvailRectDisplayPix(x, y, width, height);
+  return { x: x.value, y: y.value, width: width.value, height: height.value };
+}
+
+// Keeps the window inside the claimed screen once the startup hold in
+// applyWindowSize is over (holding() turns false): a resize past the claimed
+// available area is undone, and a maximize on a real screen larger than the
+// claimed one gives the claimed available area instead. Fullscreen covers the
+// real screen and is left alone, so video keeps playing.
+function keepInsideClaimedScreen(win, holding = () => false) {
+  const avail = claimedAvailSize();
+  if (!avail) {
+    return;
+  }
+  // The window a maximize gave on a screen larger than the claimed one, and
+  // the window before it.
+  let maximized = null;
+  // A size the window manager refuses is not asked for again.
+  let refused = "";
+  let busy = false;
+  const bounds = () => ({ x: win.screenX, y: win.screenY, width: win.outerWidth, height: win.outerHeight });
+  const place = b => {
+    win.moveTo(b.x, b.y);
+    win.resizeTo(b.width, b.height);
+  };
+  const near = (a, b) => ["x", "y", "width", "height"].every(k => Math.abs(a[k] - b[k]) <= 2);
+  const fitMaximized = () => {
+    const real = realAvailRect(win);
+    // On a screen no larger than the claimed one the window stays maximized.
+    if (real.width <= avail.width && real.height <= avail.height) {
+      return;
+    }
+    // On a larger screen it gets what a maximize gives on the claimed screen,
+    // its whole available area, here at the corner of the real one. Maximizing
+    // that window again puts back the window from before, as a restore does.
+    win.restore();
+    const before = bounds();
+    if (maximized && near(before, maximized.window)) {
+      place(maximized.before);
+      maximized = null;
+      return;
+    }
+    maximized = {
+      window: { x: real.x, y: real.y, width: Math.min(real.width, avail.width), height: Math.min(real.height, avail.height) },
+      before,
+    };
+    place(maximized.window);
+  };
+  const fitNormal = () => {
+    if (holding()) {
+      return;
+    }
+    // A resize past the claimed screen is undone.
+    const width = Math.min(win.outerWidth, avail.width);
+    const height = Math.min(win.outerHeight, avail.height);
+    if (width === win.outerWidth && height === win.outerHeight) {
+      refused = "";
+      return;
+    }
+    if (refused === `${width}x${height}`) {
+      return;
+    }
+    refused = `${width}x${height}`;
+    win.resizeTo(width, height);
+  };
+  // Events it causes itself while it runs are ignored.
+  const run = (state, step) => {
+    if (busy || win.closed || win.fullScreen || win.windowState !== state) {
+      return;
+    }
+    busy = true;
+    try {
+      step();
+    } finally {
+      busy = false;
+    }
+  };
+  let maximizePending = false;
+  const fit = () => {
+    if (win.windowState !== win.STATE_MAXIMIZED) {
+      run(win.STATE_NORMAL, fitNormal);
+      return;
+    }
+    // Answered once the maximize is done: a window restored from inside it
+    // on Windows stays where the maximize put it, with its title bar off screen.
+    if (!maximizePending) {
+      maximizePending = true;
+      Services.tm.dispatchToMainThread(() => {
+        maximizePending = false;
+        run(win.STATE_MAXIMIZED, fitMaximized);
+      });
+    }
+  };
+  win.addEventListener("resize", fit);
+  win.addEventListener("sizemodechange", fit);
+  fit();
+}
+
 function applyWindowSize(win) {
   // The real window is resized to the identity's size; pinning the document
   // instead deadlocks Juggler's viewport handshake (daijro/camoufox#666).
@@ -151,14 +271,19 @@ function applyWindowSize(win) {
     .QueryInterface(Ci.nsIInterfaceRequestor)
     .getInterface(Ci.nsIAppWindow);
   if (appWindow.initialOpenWindowInfo) {
+    keepInsideClaimedScreen(win);
     return;
   }
   applyWindowPosition(win);
-  const outerWidth = ChromeUtils.camouGetInt("window.outerWidth");
-  const outerHeight = ChromeUtils.camouGetInt("window.outerHeight");
+  // AliasMode: the identity's size is the first size only, and never more
+  // than its screen.
+  const avail = claimedAvailSize();
+  const outerWidth = Math.min(ChromeUtils.camouGetInt("window.outerWidth"), avail?.width ?? Infinity);
+  const outerHeight = Math.min(ChromeUtils.camouGetInt("window.outerHeight"), avail?.height ?? Infinity);
   const innerWidth = ChromeUtils.camouGetInt("window.innerWidth");
   const innerHeight = ChromeUtils.camouGetInt("window.innerHeight");
   if (!(outerWidth || outerHeight || innerWidth || innerHeight)) {
+    keepInsideClaimedScreen(win);
     return;
   }
   const doc = win.document;
@@ -231,19 +356,22 @@ function applyWindowSize(win) {
   const deadline = Date.now() + 5000;
   let held = null;
   let holdTimer = null;
+  let holding = true;
   const stopHolding = () => {
+    holding = false;
     win.removeEventListener("sizemodechange", holdStartupSize);
     win.removeEventListener("resize", holdStartupSize);
     win.clearInterval(holdTimer);
   };
   const holdStartupSize = () => {
-    if (Date.now() > deadline || win.windowState === win.STATE_FULLSCREEN) {
+    // AliasMode: a maximize, the user's or the window manager's, ends the
+    // hold instead of being undone; keepInsideClaimedScreen answers it.
+    if (Date.now() > deadline || win.windowState === win.STATE_FULLSCREEN ||
+        win.windowState === win.STATE_MAXIMIZED) {
       stopHolding();
       return;
     }
-    if (win.windowState === win.STATE_MAXIMIZED) {
-      win.restore();
-    } else if (held && held[0] === win.outerWidth && held[1] === win.outerHeight &&
+    if (held && held[0] === win.outerWidth && held[1] === win.outerHeight &&
                !misfit().some(Boolean)) {
       // The window being at the held size is not enough: the toolbars can
       // reflow after it got there (84px to 72px tall, a few hundred ms in, on
@@ -264,6 +392,7 @@ function applyWindowSize(win) {
   win.addEventListener("sizemodechange", holdStartupSize);
   win.addEventListener("resize", holdStartupSize);
   holdTimer = win.setInterval(holdStartupSize, 100);
+  keepInsideClaimedScreen(win, () => holding && Date.now() <= deadline);
   // A driver's viewport takes over from the identity's startup size at once.
   win.addEventListener(
     "CamoufoxViewportSized",
@@ -277,6 +406,22 @@ function applyWindowSize(win) {
     },
     { once: true }
   );
+}
+
+function applyWindowLabel(win) {
+  // The label leads the OS window title (taskbar, window switcher), so a user
+  // can tell profiles apart. Only the browser window's own title changes; a
+  // page's document.title is untouched.
+  const label = ChromeUtils.camouGetString("aliasmode:windowLabel");
+  if (!label) {
+    return;
+  }
+  const gBrowser = win.gBrowser;
+  const stockTitle = gBrowser.getWindowTitleForBrowser;
+  gBrowser.getWindowTitleForBrowser = function (browser) {
+    return label + " — " + stockTitle.call(this, browser);
+  };
+  gBrowser.updateTitlebar();
 }
 
 function addDebugListeners(win) {
@@ -337,7 +482,7 @@ export const CamoufoxWindow = {
   // Called from gBrowserInit.onLoad() with the window. The category's jsGlobal
   // is consumed by BrowserUtils.callModulesFromCategory, not passed on.
   onWindowLoad(win) {
-    for (const step of [applyWindowSize, addDebugListeners, addCursorFollower]) {
+    for (const step of [applyWindowSize, applyWindowLabel, addDebugListeners, addCursorFollower]) {
       try {
         step(win);
       } catch (e) {

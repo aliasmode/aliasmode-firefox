@@ -1,0 +1,17 @@
+diff --git a/dom/base/nsFocusManager.cpp b/dom/base/nsFocusManager.cpp
+--- a/dom/base/nsFocusManager.cpp
++++ b/dom/base/nsFocusManager.cpp
+@@ -1887,7 +1887,12 @@
+ 
+   // In Playwright, we want to send focus events even if the element
+   // isn't actually in the active window.
+-  isElementInActiveWindow = true;
++  // AliasMode: as in stock Firefox, an element of a window that is not the
++  // active one becomes that window's focused element, and its focus events
++  // fire when the window is activated. Playwright's behavior is opt-in.
++  if (Preferences::GetBool("aliasmode.focus.emulate_active_window", false)) {
++    isElementInActiveWindow = true;
++  }
+ 
+   // Exit fullscreen if a website focuses another window
+   if (StaticPrefs::full_screen_api_exit_on_windowRaise() &&

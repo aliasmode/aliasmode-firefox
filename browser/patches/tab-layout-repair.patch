@@ -1,0 +1,50 @@
+AliasMode: repair saved toolbar layouts whose new tab and tab list buttons an
+earlier AliasMode extension-pinning hook moved from the tab strip to the nav
+bar (CustomizableUI migration step 29; Firefox 159 uses 27 and 28).
+
+diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
+--- a/browser/components/customizableui/CustomizableUI.sys.mjs
++++ b/browser/components/customizableui/CustomizableUI.sys.mjs
+@@ -68,7 +68,7 @@ const kSubviewEvents = ["ViewShowing", "ViewHiding"];
+  * The current version. We can use this to auto-add new default widgets as necessary.
+  * (would be const but isn't because of testing purposes)
+  */
+-var kVersion = 28;
++var kVersion = 29;
+ 
+ /**
+  * Buttons removed from built-ins by version they were removed. kVersion must be
+@@ -1045,6 +1045,33 @@ var CustomizableUIInternal = {
+         CustomizableUIInternal.saveHorizontalTabStripState(horizontalSnapshot);
+       }
+     }
++
++    // AliasMode: repair tab controls moved by AliasMode's former
++    // extension-pinning hook (Firefox 152-156 builds): the new tab and the
++    // tab list buttons ended up in the nav bar, leaving the tab strip with the
++    // tabs alone, or with the flexible space version 28 added. Firefox 159 uses
++    // versions 27 and 28 for its own steps, so this one is 29.
++    if (currentVersion < 29) {
++      const tabs = gSavedState.placements[CustomizableUI.AREA_TABSTRIP];
++      const navbar = gSavedState.placements[CustomizableUI.AREA_NAVBAR];
++      if (
++        Array.isArray(tabs) &&
++        Array.isArray(navbar) &&
++        tabs[0] === "tabbrowser-tabs" &&
++        (tabs.length === 1 ||
++          (tabs.length === 2 &&
++            CustomizableUIInternal.matchingSpecials(tabs[1], "spring"))) &&
++        navbar.includes("new-tab-button") &&
++        navbar.includes("alltabs-button")
++      ) {
++        gSavedState.placements[CustomizableUI.AREA_NAVBAR] = navbar.filter(
++          id => id !== "new-tab-button" && id !== "alltabs-button"
++        );
++        tabs.splice(1, tabs.length - 1, "new-tab-button", "spring", "alltabs-button");
++        gDirty = true;
++        this.saveState();
++      }
++    }
+   },
+ 
+   /**

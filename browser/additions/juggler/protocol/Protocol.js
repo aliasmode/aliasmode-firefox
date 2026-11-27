@@ -272,6 +272,7 @@ const Browser = {
     'newPage': {
       params: {
         browserContextId: t.Optional(t.String),
+        hidden: t.Optional(t.Boolean),
       },
       returns: {
         targetId: t.String,
@@ -291,6 +292,12 @@ const Browser = {
       },
     },
     'clearCache': {},
+    // AliasMode: report WebSocket frames and keep response bodies (pref juggler.networkDetail).
+    'setNetworkDetail': {
+      params: {
+        enabled: t.Boolean,
+      },
+    },
     'setBrowserProxy': {
       params: {
         type: t.Enum(['http', 'https', 'socks', 'socks4']),
