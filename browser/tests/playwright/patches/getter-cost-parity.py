@@ -258,6 +258,19 @@ def stop_stock(profile, proc):
     shutil.rmtree(profile, ignore_errors=True)
 
 
+def system_fonts_env():
+    """The launch environment with the system's fonts, as stock Firefox and the
+    AliasMode app run. The launcher points Linux at a fontconfig of the
+    package's own fonts/, and an AliasMode package carries none, so every
+    canvas text fell back through an empty font set: measureText took 2.5-3.4
+    us against stock's 1.3 on one host (1.9-2.3 against 0.6-0.9 on CI), and
+    1.4-1.7 with the system's fonts."""
+    env = no_proxy_env()
+    if sys.platform.startswith("linux"):
+        env["FONTCONFIG_FILE"] = "/etc/fonts/fonts.conf"
+    return env
+
+
 def run_camoufox(binary, url, identity):
     """identity: "launch" (a plain page: every per-context lookup misses) or
     "context" (a per-context fingerprint: every lookup hits)."""
@@ -265,7 +278,7 @@ def run_camoufox(binary, url, identity):
     from camoufox.fingerprints import generate_context_fingerprint
 
     with Camoufox(os="windows", headless=True, executable_path=str(binary),
-                  i_know_what_im_doing=True) as browser:
+                  env=system_fonts_env(), i_know_what_im_doing=True) as browser:
         if identity == "context":
             fp = generate_context_fingerprint(os="windows")
             ctx = browser.new_context(**fp["context_options"])
