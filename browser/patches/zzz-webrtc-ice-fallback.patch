@@ -4,8 +4,9 @@ blocked: host candidates, a srflx with the identity's address after the round
 trip through the proxy from a STUN server that could answer, the errors and
 timings nICEr gives the others, and checks that fail. None of it sends a
 packet. Behind a SOCKS5 proxy with UDP the real agent works through the
-proxy's UDP relay (webrtc-socks5-udp.patch) and this never starts.
-aliasmode:webrtcFakeIce false turns it off.
+proxy's UDP relay (webrtc-socks5-udp.patch) and this never starts, and so does
+a configuration with a TURN server over TCP or TLS, which the real agent
+reaches through the proxy. aliasmode:webrtcFakeIce false turns it off.
 
 diff --git a/dom/base/WebRTCIPManager.cpp b/dom/base/WebRTCIPManager.cpp
 --- a/dom/base/WebRTCIPManager.cpp
@@ -177,7 +178,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
      return candidate;
    }
  
-@@ -3838,6 +3889,469 @@ void PeerConnectionImpl::MaybeFabricateHostCandidates() {
+@@ -3838,6 +3889,487 @@ void PeerConnectionImpl::MaybeFabricateHostCandidates() {
                                ObString(ufrag.c_str()), rv);
  }
  
@@ -402,6 +403,24 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +  if (!mForceProxy || !mWindow || !ShouldSpoofCandidateIP() ||
 +      !MaskConfig::GetOptionalBool("aliasmode:webrtcFakeIce").value_or(true)) {
 +    return false;
++  }
++  // A TURN server over TCP or TLS is reached through the proxy (CONNECT), so
++  // the real agent gathers, and the page gets the relay candidate a call
++  // needs, as stock Firefox behind the proxy does.
++  for (const auto& server : mJsConfiguration.mIceServers) {
++    for (const auto& url : server.mUrls) {
++      auto parsed =
++          IceServerParser::ParseStunTurnUri(NS_ConvertUTF16toUTF8(url));
++      if (parsed.isErr()) {
++        parsed.unwrapErr().SuppressException();
++        continue;
++      }
++      const auto& uri = parsed.inspect();
++      if (uri.IsTurn() &&
++          (uri.IsTls() || uri.mTransport == IceServerParser::IceTransport::Tcp)) {
++        return false;
++      }
++    }
 +  }
 +  return !WebRTCIPManager::ProxyRelaysUdp(
 +      dom::RoverfoxStorageManager::UserContextId(mWindow.get()));
@@ -647,7 +666,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
  // Implements the steps to "change the selected candidate pair and state".
  // https://w3c.github.io/webrtc-pc/#dfn-change-the-selected-candidate-pair-and-state
  void PeerConnectionImpl::IceConnectionStateChange(
-@@ -3854,6 +4368,12 @@ void PeerConnectionImpl::IceConnectionStateChange(
+@@ -3854,6 +4386,12 @@ void PeerConnectionImpl::IceConnectionStateChange(
      return;
    }
  
@@ -660,7 +679,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    CSFLogDebug(LOGTAG, "IceConnectionStateChange: %s %d (%p)",
                aTransportId.c_str(), static_cast<int>(domState), this);
  
-@@ -4159,6 +4679,10 @@ void PeerConnectionImpl::IceGatheringStateChange(
+@@ -4159,6 +4697,10 @@ void PeerConnectionImpl::IceGatheringStateChange(
      return;
    }
  
@@ -671,7 +690,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    CSFLogDebug(LOGTAG, "IceGatheringStateChange: %s %d (%p)",
                aTransportId.c_str(), static_cast<int>(state), this);
  
-@@ -5112,6 +5636,11 @@ void PeerConnectionImpl::StartIceChecks(const JsepSession& aSession) {
+@@ -5112,6 +5654,11 @@ void PeerConnectionImpl::StartIceChecks(const JsepSession& aSession) {
      }
    }
  
@@ -683,7 +702,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    nsCOMPtr<nsIRunnable> runnable(
        WrapRunnable(mTransportHandler, &MediaTransportHandler::StartIceChecks,
                     aSession.IsIceControlling(), attributes));
-@@ -5164,6 +5693,10 @@ void PeerConnectionImpl::AddIceCandidate(const std::string& aCandidate,
+@@ -5164,6 +5711,10 @@ void PeerConnectionImpl::AddIceCandidate(const std::string& aCandidate,
    MOZ_ASSERT(NS_IsMainThread());
    MOZ_ASSERT(!aTransportId.empty());
  
@@ -694,7 +713,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    bool obfuscate_host_addresses = Preferences::GetBool(
        "media.peerconnection.ice.obfuscate_host_addresses", false);
  
-@@ -5351,6 +5884,32 @@ void PeerConnectionImpl::EnsureIceGathering(bool aDefaultRouteOnly,
+@@ -5351,6 +5902,32 @@ void PeerConnectionImpl::EnsureIceGathering(bool aDefaultRouteOnly,
      return;
    }
  
