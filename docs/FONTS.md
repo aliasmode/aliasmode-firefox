@@ -10,6 +10,20 @@ with it. The marker fonts and Windows 11 marker fonts, in `markerFonts` and
 `windows11MarkerFonts` of `python/src/camoufox/launcher-constants.json`, are
 kept by hand and must name fonts the bundle has.
 
+## AliasMode packages: font packs instead of bundled sets
+
+AliasMode's engine packages carry no font sets, only what Firefox itself ships in
+`fonts/` (`TwemojiMozilla.ttf`). A profile of the host's own OS uses the real
+system fonts (as below). A profile of another OS needs that OS's fonts: the app
+downloads one **font pack** per OS (`aliasmode-fonts-<os>-<rev>.zip`, a release
+asset next to the engine archives), checks its SHA-256, unpacks it in the app's
+data folder and passes the folder in the `aliasmode:fontsDir` config key.
+`font-pack-dir.patch` activates that folder after `fonts/` (DirectWrite, CoreText
+and fontconfig), except for a native identity. On macOS such a face reaches the
+GPU process as font data (`macos-font-pack-gpu.patch`). `make font-packs`
+(`browser/scripts/package-font-packs.py`) builds the packs from the per-OS sets
+of the 152.0.4-beta.30 r4 packages, the fonts the app's font lists were made for.
+
 ## Getting the bundle
 
 The bundle is **a release asset, not repo content** — 1513 faces, 2.16 GB

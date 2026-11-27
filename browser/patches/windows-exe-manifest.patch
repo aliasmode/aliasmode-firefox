@@ -12,10 +12,14 @@ H.264/VP9 powerEfficient false (stock true), the HDR metadata probe 000 (stock
 The file is a byte-for-byte copy of browser/app/firefox.exe.manifest, including
 name="Firefox" (the manifest is not page-readable; identical is simplest).
 
-diff --git a/browser/app/camoufox.exe.manifest b/browser/app/camoufox.exe.manifest
+AliasMode: this build uses --with-app-name=aliasmode, so the program is
+aliasmode.exe and config/create_rc.py looks for aliasmode.exe.manifest. The
+file below has that name. Keep it equal to the app name in assets/base.mozconfig.
+
+diff --git a/browser/app/aliasmode.exe.manifest b/browser/app/aliasmode.exe.manifest
 new file mode 100644
 --- /dev/null
-+++ b/browser/app/camoufox.exe.manifest
++++ b/browser/app/aliasmode.exe.manifest
 @@ -0,0 +1,47 @@
 +<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 +<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">

@@ -2,13 +2,14 @@ diff --git a/browser/installer/package-manifest.in b/browser/installer/package-m
 index ae503c243c..c9396afe0a 100644
 --- a/browser/installer/package-manifest.in
 +++ b/browser/installer/package-manifest.in
-@@ -264,6 +264,10 @@
+@@ -264,6 +264,11 @@
  @RESPATH@/browser/components/shell/assets/kit.gif
  #endif
  
-+; Camoufox specific files
++; AliasMode specific files
 +@RESPATH@/defaults/pref/local-settings.js
 +@RESPATH@/camoufox.cfg
++@RESPATH@/aliasmode-provenance.json
 +
  ; [Default Preferences]
  ; All the pref files must be part of base to prevent migration bugs
@@ -17,8 +18,9 @@ diff --git a/lw/moz.build b/lw/moz.build
 index e69de29bb2..8b4e45fb64 100644
 --- a/lw/moz.build
 +++ b/lw/moz.build
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,9 @@
 +FINAL_TARGET_FILES += [
++  "aliasmode-provenance.json",
 +  "camoufox.cfg",
 +  "properties.json"
 +]

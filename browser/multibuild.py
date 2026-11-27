@@ -29,6 +29,7 @@ import shutil
 # Constants
 AVAILABLE_TARGETS = ["linux", "windows", "macos"]
 AVAILABLE_ARCHS = ["x86_64", "arm64", "i686"]
+APP_NAME = "aliasmode"
 
 
 def setup_linux_sysroots():
@@ -95,7 +96,7 @@ class BSYS:
     @property
     def assets(self) -> List[str]:
         """Get the list of assets"""
-        package_pattern = f'camoufox-*-{self.target[:3]}.{self.arch}.zip'
+        package_pattern = f'{APP_NAME}-*-{self.target[:3]}.{self.arch}.zip'
         return glob.glob(package_pattern)
 
     @staticmethod

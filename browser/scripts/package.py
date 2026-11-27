@@ -17,6 +17,8 @@ from _mixin import find_src_dir, get_moz_target, list_files, run, temp_cd
 # The GPU probe (gfxtest) is NOT here: without it nsIGfxInfo has no data and the
 # driver blocklist refuses every WebGL context where stock Firefox gets one.
 UNNEEDED_PATHS = {'uninstall', 'pingsender.exe', 'pingsender'}
+APP_NAME = 'aliasmode'
+APP_DISPLAY_NAME = 'AliasMode'
 
 # APPNOTE.TXT 4.4.2: "version made by" host 3 is Unix, whose external
 # attributes carry st_mode in the high 16 bits.
@@ -151,27 +153,27 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target, ver
             )
 
         if target == 'macos':
-            # Move Camoufox/Camoufox.app -> Camoufox.app
-            nightly_dir = os.path.join(temp_dir, 'Camoufox')
+            # Move AliasMode.app out of the package directory.
+            nightly_dir = os.path.join(temp_dir, APP_DISPLAY_NAME)
             shutil.move(
-                os.path.join(nightly_dir, 'Camoufox.app'), os.path.join(temp_dir, 'Camoufox.app')
+                os.path.join(nightly_dir, f'{APP_DISPLAY_NAME}.app'),
+                os.path.join(temp_dir, f'{APP_DISPLAY_NAME}.app'),
             )
             # Remove old app dir and all content in it
             shutil.rmtree(nightly_dir)
         else:
-            # Move contents out of camoufox folder if it exists
-            old_camoufox_dir = os.path.join(temp_dir, 'camoufox')
-            camoufox_dir = os.path.join(temp_dir, 'camoufox-folder')
-            if os.path.exists(old_camoufox_dir):
-                # Rename camoufox_dir
-                os.rename(old_camoufox_dir, camoufox_dir)
-                for item in os.listdir(camoufox_dir):
-                    shutil.move(os.path.join(camoufox_dir, item), temp_dir)
-                os.rmdir(camoufox_dir)
+            # Move contents out of the application folder if it exists
+            old_app_dir = os.path.join(temp_dir, APP_NAME)
+            app_dir = os.path.join(temp_dir, f'{APP_NAME}-folder')
+            if os.path.exists(old_app_dir):
+                os.rename(old_app_dir, app_dir)
+                for item in os.listdir(app_dir):
+                    shutil.move(os.path.join(app_dir, item), temp_dir)
+                os.rmdir(app_dir)
 
         # Create target_dir
         if target == 'macos':
-            target_dir = os.path.join(temp_dir, 'Camoufox.app', 'Contents', 'Resources')
+            target_dir = os.path.join(temp_dir, f'{APP_DISPLAY_NAME}.app', 'Contents', 'Resources')
         else:
             target_dir = temp_dir
 
@@ -198,8 +200,13 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target, ver
         # (bundle/fonts/groups.json), so look up the groups each OS reads.
         fonts_dir = os.path.join(target_dir, 'fonts')
         groups_file = os.path.join('bundle', 'fonts', 'groups.json')
-        wanted = font_groups_for(groups_file, fonts or [])
-        if target == 'linux':
+        # AliasMode: the default is no font sets, only what Firefox ships in
+        # fonts/. The app downloads a font pack per OS instead
+        # (package-font-packs.py, font-pack-dir.patch).
+        wanted = font_groups_for(groups_file, fonts) if fonts else []
+        if not wanted:
+            pass
+        elif target == 'linux':
             # Linux resolves fonts through fontconfig, which is handed the exact
             # group directories for the claimed OS at launch (utils._generate_fontconfig),
             # so the subdirectories are the per-OS gate and must be preserved.
@@ -282,7 +289,7 @@ def main():
         run('./mach package')
         # Find package files
         search_path = os.path.abspath(
-            f'obj-{moz_target}/dist/camoufox-{args.version}-{args.release}.*.{file_ext}'
+            f'obj-{moz_target}/dist/{APP_NAME}-{args.version}-{args.release}.*.{file_ext}'
         )
 
     # Copy package files
@@ -299,7 +306,7 @@ def main():
         sys.exit(1)
 
     # Find the package file
-    package_pattern = f'camoufox-{args.version}-{args.release}.en-US.*.{file_ext}'
+    package_pattern = f'{APP_NAME}-{args.version}-{args.release}.en-US.*.{file_ext}'
     package_files = glob.glob(package_pattern)
     if not package_files:
         print(f"Error: No package file found matching pattern: {package_pattern}")
@@ -307,7 +314,7 @@ def main():
     package_file = package_files[0]
 
     # Add includes to the package
-    new_name = f'camoufox-{args.version}-{args.release}-{args.os[:3]}.{args.arch}.zip'
+    new_name = f'{APP_NAME}-{args.version}-{args.release}-{args.os[:3]}.{args.arch}.zip'
     add_includes_to_package(
         package_file=package_file,
         includes=args.includes,

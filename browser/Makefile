@@ -5,7 +5,7 @@ cf_source_dir := camoufox-$(version)-$(release)
 ff_source_tarball := firefox-$(version).source.tar.xz
 
 .PHONY: help fetch setup-minimal setup ff-dbg revert fetch-fonts fonts-extract fonts-check \
-        fonts-clean dir set-target mozbootstrap setup-macos-sdk bootstrap diff first-checkpoint \
+        fonts-clean font-packs dir set-target mozbootstrap setup-macos-sdk bootstrap diff first-checkpoint \
         checkpoint clean distclean build preflight package-linux package-macos package-windows run edit-cfg \
         check-arg grep patch unpatch workspace tests stage-fonts stage-ubo unbusy path \
         generate-assets-car
@@ -35,7 +35,7 @@ help:
 	@echo "  package-macos       - Package Camoufox for macOS"
 	@echo "  package-windows     - Package Camoufox for Windows"
 	@echo "  run                 - Run Camoufox"
-	@echo "  path                - Print the path of the built camoufox-bin"
+	@echo "  path                - Print the path of the built aliasmode-bin"
 	@echo "  edit-cfg            - Edit camoufox.cfg"
 	@echo "  ff-dbg              - Setup vanilla Firefox with minimal patches"
 	@echo "  patch               - Apply a patch"
@@ -172,38 +172,41 @@ preflight:
 	fi
 	python3 scripts/preflight.py $(cf_source_dir)
 
-package-linux: fonts-extract
+# AliasMode: the packages carry no font sets of other OSes, only what Firefox
+# itself ships in fonts/. A profile of another OS reads that OS's font pack,
+# which the app downloads on demand (font-packs below, font-pack-dir.patch).
+package-linux:
 	python3 scripts/package.py linux \
 		--includes \
 			settings/properties.json \
 			bundle/fontconfig \
 		--version $(version) \
 		--release $(release) \
-		--arch $(arch) \
-		--fonts windows macos linux
+		--arch $(arch)
 
-package-macos: fonts-extract
+package-macos:
 	python3 scripts/package.py macos \
 		--includes \
 			settings/properties.json \
 		--version $(version) \
 		--release $(release) \
-		--arch $(arch) \
-		--fonts windows macos linux
+		--arch $(arch)
 
-package-windows: fonts-extract
+package-windows:
 	python3 scripts/package.py windows \
 		--includes \
 			settings/properties.json \
 			~/.mozbuild/vs/VC/Redist/MSVC/*/$(vcredist_arch)/Microsoft.VC*.CRT/*.dll \
 		--version $(version) \
 		--release $(release) \
-		--arch $(arch) \
-		--fonts windows macos linux
+		--arch $(arch)
+
+font-packs:
+	python3 scripts/package-font-packs.py --out dist
 
 run:
 	cd $(cf_source_dir) \
-	&& rm -rf ~/.camoufox obj-x86_64-pc-linux-gnu/tmp/profile-default \
+	&& rm -rf ~/.aliasmode obj-x86_64-pc-linux-gnu/tmp/profile-default \
 	&& CAMOU_CONFIG=$$(python3 -c 'import json, os; print(json.dumps({**json.loads(os.environ.get("CAMOU_CONFIG") or "{}"), "debug": True}))') \
 	&& export CAMOU_CONFIG \
 	&& ./mach run $(args)
@@ -249,7 +252,7 @@ workspace:
 # .ci-work/ and is slow; later runs reuse it.
 tests:
 	cd .. && python3 -m ci.run_playwright \
-		--binary browser/$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
+		--binary browser/$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode-bin \
 		$(if $(filter true,$(headful)),--headful,)
 
 # Lets tests/playwright/patches/*.py run against an unpackaged build. A fresh
@@ -263,11 +266,11 @@ stage-ubo:
 	python3 scripts/fetch-ubo.py stage $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin
 
 unbusy:
-	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
-		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox
+	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode-bin \
+		$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode
 
 path:
-	@realpath $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin
+	@realpath $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/aliasmode-bin
 
 generate-assets-car:
 	bash ./scripts/generate-assets-car.sh

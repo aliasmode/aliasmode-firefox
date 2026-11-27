@@ -5,7 +5,7 @@
 # Note: MOZ_APP_VENDOR and MOZ_APP_PROFILE must be set via imply_option() in browser/moz.configure
 # See patches/librewolf/disable-data-reporting-at-compile-time.patch
 
-MOZ_APP_NAME=camoufox
-MOZ_APP_BASENAME=Camoufox
-MOZ_APP_DISPLAYNAME=Camoufox
-MOZ_APP_REMOTINGNAME=camoufox
+MOZ_APP_NAME=aliasmode
+MOZ_APP_BASENAME=AliasMode
+MOZ_APP_DISPLAYNAME=AliasMode
+MOZ_APP_REMOTINGNAME=aliasmode

@@ -64,7 +64,7 @@ def resolve_binary() -> Path:
         if os.environ.get(var):
             return Path(os.environ[var]).resolve()
     root = Path(__file__).resolve().parents[3]
-    matches = sorted(root.glob("camoufox-*/obj-*-linux-gnu/dist/bin/camoufox-bin"))
+    matches = sorted(root.glob("camoufox-*/obj-*-linux-gnu/dist/bin/aliasmode-bin"))
     if not matches:
         raise SystemExit("no camoufox binary: set CAMOUFOX_EXECUTABLE_PATH")
     return matches[-1]
