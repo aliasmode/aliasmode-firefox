@@ -313,19 +313,18 @@ rules:
       minute. The two config keys that chose between the two tells are gone.
 
   - id: driven-pages-stay-focused
-    title: A driven page stays focused and active, deliberately not stock
-    check: manual   # browser/tests/playwright/patches/driven-page-real-focus.py
+    title: "AliasMode: a driven page gets stock focus, blur and visibility"
+    check: manual
     evidence:
-      - "product decision, 2026-11-05: every page a caller opens must keep running as if a person is looking at it"
-      - "the stock-focus change in daijro/camoufox#997 made background pages lose focus and visibility; it is reverted here"
+      - "AliasMode decision, 2026-11-26: no focus or activity emulation (no overrideHasFocus, forceActiveState, forceAppWindowActive or focusmanager.testmode with a driver)"
     rationale: >-
-      Stock Firefox gives a page behind another window hasFocus() false, a
-      window blur, and a hidden, throttled state behind a foreground tab. A
-      driver's pages are all work the caller asked for, in parallel, so
-      Camoufox keeps every top-level driven document focused and active
-      (docShell.overrideHasFocus / forceActiveState). This is page-visible: it
-      is a product choice, not a parity bug.
-
+      AliasMode drives people's own browser windows, so a page reads the
+      focus, blur and visibility stock Firefox gives it. Upstream's
+      driven-page-real-focus.py and occluded-window-active.py asserted the
+      opposite and are not carried. A covered or minimized window is
+      throttled as in stock, so a command that waits for a frame waits
+      until the window shows; input commands raise their tab and window
+      first (PageTarget.activateAndRun).
   - id: no-made-up-srflx
     title: A srflx candidate comes only from a STUN answer
     check: manual   # browser/tests/playwright/patches/webrtc-context-ip.py, webrtc-socks5-udp.py
