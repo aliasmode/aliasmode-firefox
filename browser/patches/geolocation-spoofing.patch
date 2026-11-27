@@ -1,5 +1,9 @@
+Camoufox: geolocation:latitude/longitude (and accuracy) are the position a page
+gets. AliasMode: the page still asks for it as on stock Firefox (the permission
+prompt, a stored grant or a denial), and with the position configured no OS
+location service, Wi-Fi scan or network location request starts.
+
 diff --git a/dom/geolocation/Geolocation.cpp b/dom/geolocation/Geolocation.cpp
-index 328b7f4406..eed4f20749 100644
 --- a/dom/geolocation/Geolocation.cpp
 +++ b/dom/geolocation/Geolocation.cpp
 @@ -37,6 +37,7 @@
@@ -10,21 +14,20 @@ index 328b7f4406..eed4f20749 100644
  
  class nsIPrincipal;
  
-@@ -1147,6 +1148,12 @@ void Geolocation::NotifyAllowedRequest(nsGeolocationRequest* aRequest) {
- /* static */ bool Geolocation::RegisterRequestWithPrompt(
-     nsGeolocationRequest* request) {
-   nsIEventTarget* target = GetMainThreadSerialEventTarget();
+@@ -1198,6 +1199,12 @@ void Geolocation::NotifyAllowedRequest(nsGeolocationRequest* aRequest) {
+ 
+ /* static */ geolocation::SystemGeolocationPermissionBehavior
+ Geolocation::GetLocationOSPermission() {
++  // AliasMode: a configured position needs no OS location service, so its
++  // permission is not asked for (GeolocationService::Init).
 +  if (MaskConfig::GetDouble("geolocation:latitude") &&
 +      MaskConfig::GetDouble("geolocation:longitude")) {
-+    request->RequestDelayedTask(target,
-+                                nsGeolocationRequest::DelayedTaskType::Allow);
-+    return true;
++    return geolocation::SystemGeolocationPermissionBehavior::NoPrompt;
 +  }
-   ContentPermissionRequestBase::PromptResult pr = request->CheckPromptPrefs();
-   if (pr == ContentPermissionRequestBase::PromptResult::Granted) {
-     request->RequestDelayedTask(target,
+   auto permission = geolocation::GetGeolocationPermissionBehavior();
+ 
+   if (!StaticPrefs::geo_prompt_open_system_prefs() &&
 diff --git a/dom/geolocation/GeolocationPosition.cpp b/dom/geolocation/GeolocationPosition.cpp
-index 5e24bfceed..b07c76fd6e 100644
 --- a/dom/geolocation/GeolocationPosition.cpp
 +++ b/dom/geolocation/GeolocationPosition.cpp
 @@ -7,6 +7,7 @@
@@ -70,7 +73,6 @@ index 5e24bfceed..b07c76fd6e 100644
  }
  
 diff --git a/dom/geolocation/moz.build b/dom/geolocation/moz.build
-index 170552ab61..b5f1efa0a8 100644
 --- a/dom/geolocation/moz.build
 +++ b/dom/geolocation/moz.build
 @@ -73,3 +73,6 @@ BROWSER_CHROME_MANIFESTS += ["test/browser/browser.toml"]
@@ -81,10 +83,26 @@ index 170552ab61..b5f1efa0a8 100644
 +# Camoufox: include path for MaskConfig.hpp
 +LOCAL_INCLUDES += ["/camoucfg"]
 diff --git a/dom/system/NetworkGeolocationProvider.sys.mjs b/dom/system/NetworkGeolocationProvider.sys.mjs
-index 2dc54dc968..5bf84686ce 100644
 --- a/dom/system/NetworkGeolocationProvider.sys.mjs
 +++ b/dom/system/NetworkGeolocationProvider.sys.mjs
-@@ -483,28 +483,63 @@ NetworkGeolocationProvider.prototype = {
+@@ -281,7 +281,15 @@ NetworkGeolocationProvider.prototype = {
+   listener: null,
+ 
+   get isWifiScanningEnabled() {
+-    return Cc["@mozilla.org/wifi/monitor;1"] && this._wifiScanningEnabled;
++    // AliasMode: a configured position (sendLocationRequest) scans no Wi-Fi.
++    const configured =
++      ChromeUtils.camouGetDouble("geolocation:latitude", -180) != -180 &&
++      ChromeUtils.camouGetDouble("geolocation:longitude", -180) != -180;
++    return (
++      Cc["@mozilla.org/wifi/monitor;1"] &&
++      this._wifiScanningEnabled &&
++      !configured
++    );
+   },
+ 
+   resetTimer() {
+@@ -483,28 +491,63 @@ NetworkGeolocationProvider.prototype = {
      // From here on, do a network geolocation request //
      let url = Services.urlFormatter.formatURLPref("geo.provider.network.url");
  
@@ -166,3 +184,40 @@ index 2dc54dc968..5bf84686ce 100644
        if (this.listener) {
          this.listener.update(newLocation);
        }
+diff --git a/toolkit/components/geolocation/GeolocationService.cpp b/toolkit/components/geolocation/GeolocationService.cpp
+--- a/toolkit/components/geolocation/GeolocationService.cpp
++++ b/toolkit/components/geolocation/GeolocationService.cpp
+@@ -9,6 +9,7 @@
+ #include "mozilla/glean/DomGeolocationMetrics.h"
+ #include "nsComponentManagerUtils.h"
+ #include "nsServiceManagerUtils.h"
++#include "MaskConfig.hpp"
+ 
+ #ifdef MOZ_WIDGET_ANDROID
+ #  include "AndroidLocationProvider.h"
+@@ -74,6 +75,15 @@ nsresult GeolocationService::Init(bool isOverride) {
+ 
+   obs->AddObserver(this, "xpcom-shutdown", false);
+ 
++  // AliasMode: a configured position comes from the network provider
++  // (NetworkGeolocationProvider.sys.mjs), which then sends no request, so no
++  // OS location service starts.
++  if (MaskConfig::GetDouble("geolocation:latitude") &&
++      MaskConfig::GetDouble("geolocation:longitude")) {
++    mProvider = do_GetService(NS_GEOLOCATION_PROVIDER_CONTRACTID);
++    return NS_OK;
++  }
++
+ #ifdef MOZ_WIDGET_ANDROID
+   mProvider = new AndroidLocationProvider();
+ #endif
+diff --git a/toolkit/components/geolocation/moz.build b/toolkit/components/geolocation/moz.build
+--- a/toolkit/components/geolocation/moz.build
++++ b/toolkit/components/geolocation/moz.build
+@@ -39,3 +39,6 @@
+     if CONFIG["MOZ_ENABLE_DBUS"]:
+         LOCAL_INCLUDES += ["/dom/system/linux"]
+         CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
++
++# AliasMode: include path for MaskConfig.hpp
++LOCAL_INCLUDES += ["/camoucfg"]

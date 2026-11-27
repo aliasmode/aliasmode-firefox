@@ -174,7 +174,7 @@ Global-only patches (no setter) read `CAMOU_CONFIG` at startup:
 
 | Patch | Config keys | Effect |
 |---|---|---|
-| `geolocation-spoofing.patch` | `geolocation:latitude`, `geolocation:longitude`, `geolocation:accuracy` | Returns these coordinates and grants the permission. Per context, use Playwright's `geolocation` option. |
+| `geolocation-spoofing.patch` | `geolocation:latitude`, `geolocation:longitude`, `geolocation:accuracy` | Returns these coordinates once the site has the permission, which the browser asks for as stock does (the Python launcher grants it by default); no OS or network location service starts. Per context, use Playwright's `geolocation` option. |
 | `locale-spoofing.patch` | `locale:*`, `navigator.language` | `navigator.language`, `Accept-Language`, `Intl`, the OS locale. |
 | `force-default-pointer.patch` | `navigator.maxTouchPoints` | CSS `pointer` reports a fine pointer on desktop. |
 

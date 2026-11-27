@@ -1733,13 +1733,11 @@ def launch_options(
         ):
             config['network:ipv4Only'] = True
 
-    # A page that receives a position without a prompt must also see
-    # permissions.query({name: 'geolocation'}) report "granted" -- that is
-    # what a real Firefox with a stored site grant does. The C++ auto-grant
-    # alone delivers the fix while the Permissions API still says "prompt",
-    # which is an incoherence a page can test (daijro/camoufox#769). The
-    # allow-by-default pref is the same state a user creates by choosing
-    # "Always allow", so both APIs agree without any per-site permission.
+    # The launcher gives pages the configured position without a prompt. The
+    # browser asks as stock Firefox does (geolocation-spoofing.patch), so the
+    # allow-by-default pref, the state a user creates by choosing "Always
+    # allow", grants it, and permissions.query({name: 'geolocation'}) reports
+    # "granted" as it must for a position given unasked (daijro/camoufox#769).
     if 'geolocation:latitude' in config and 'geolocation:longitude' in config:
         firefox_user_prefs.setdefault('permissions.default.geo', 1)
 
