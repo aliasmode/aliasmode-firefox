@@ -70,6 +70,26 @@ def resolve_binary() -> Path:
     return matches[-1]
 
 
+def font_pack(os_name: str) -> Dict[str, Dict[str, str]]:
+    """Launch options for the AliasMode font pack of an OS (docs/FONTS.md),
+    as the app passes it: the folder in aliasmode:fontsDir, and the content
+    sandbox allowed to read it. AliasMode packages carry no font sets, so a
+    guard whose identity is another OS's needs the pack. CI unpacks the packs
+    under ALIASMODE_FONT_PACKS (.github/workflows/tests.yml)."""
+    root = os.environ.get("ALIASMODE_FONT_PACKS")
+    pack = Path(root) / os_name if root else None
+    if pack is None or not pack.is_dir():
+        raise SystemExit(f"FAIL: no {os_name} font pack; set ALIASMODE_FONT_PACKS to the folder "
+                         f"the packs are unpacked in (one subfolder per OS)")
+    if sys.platform == "darwin":
+        prefs = {"security.sandbox.content.mac.testing_read_path1": str(pack)}
+    elif sys.platform == "win32":
+        prefs = {"security.sandbox.content.read_path_whitelist": f"{pack},{pack}\\"}
+    else:
+        prefs = {"security.sandbox.content.read_path_whitelist": f"{pack}/"}
+    return {"config": {"aliasmode:fontsDir": str(pack)}, "firefox_user_prefs": prefs}
+
+
 def launch_kwargs(**overrides: Any) -> Dict[str, Any]:
     """Camoufox() kwargs for a guard: headless, on the binary under test."""
     return {"headless": True, "executable_path": str(resolve_binary()), **overrides}

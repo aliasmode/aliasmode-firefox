@@ -38,9 +38,10 @@ What PASS means:
     * a proxy that drops the control connection once the relay is in use leaves
       gathering as UDP-blocked as a proxy that never had a relay;
     * behind an HTTP proxy, and behind a SOCKS5 proxy that refuses UDP
-      ASSOCIATE, nothing reaches the server, no srflx surfaces, and gathering
-      takes as long as it does for a machine whose STUN server never answers:
-      the page reads a machine whose UDP is blocked;
+      ASSOCIATE, nothing reaches the server and the page sees the ICE agent
+      behind the proxy (AliasMode, ci/tribal-rules.yml: no-made-up-srflx): a
+      srflx with the identity's address for a server that could answer, none
+      for a special-use name, and gathering that ends as it would then;
     * with capture permission, which is what opens a real host candidate on
       stock, a proxied page finds this machine's address in no candidate, SDP
       or stat, while a direct page on the same browser does find it;
@@ -472,9 +473,11 @@ async def main() -> int:
         stun.oversized = False
 
         http_page = await page_behind(browser, f"http://127.0.0.1:{http_port}")
+        before = len(stun.requests)
         via_http = await http_page.evaluate(GATHER, f"stun:{STUN_NAME}:{STUN_ADDR[1]}")
         refused_page = await page_behind(browser, socks(refusing))
         via_refused = await refused_page.evaluate(GATHER, stun_url)
+        without_udp_requests = stun.requests[before:]
 
         blank = await page.context.new_page()
         via_blank = await gather_through(blank)
@@ -563,15 +566,26 @@ async def main() -> int:
         ("SOCKS5 refusing UDP: the browser asked for a relay and was refused",
          refusing.refused >= 1, f"{refusing.refused} refused associations"),
     ]
+    # AliasMode: behind a proxy without UDP the page sees the ICE agent behind
+    # the proxy (ci/tribal-rules.yml: no-made-up-srflx), which sends nothing:
+    # a srflx with the identity's address for a server that could answer,
+    # none for a special-use name, and gathering ends as it would then.
+    checks.append(("behind a proxy without UDP: no Binding request reached the server",
+                   not without_udp_requests, without_udp_requests))
     for label, gather in (("HTTP proxy", via_http), ("SOCKS5 refusing UDP", via_refused)):
-        checks += [
-            (f"{label}: gathering takes as long as an unanswered STUN server's",
+        checks.append(
+            (f"{label}: gathering ends well before an unanswered STUN server's",
              gather["elapsed"] is not None and unanswered["elapsed"] is not None
-             and abs(gather["elapsed"] - unanswered["elapsed"]) < TIMER_TOLERANCE_MS,
-             f"{gather['elapsed']} against {unanswered['elapsed']}"),
-            (f"{label}: no srflx without a STUN answer (UDP blocked)",
-             gather["srflx"] == [] and gather["stats"] == [], gather["srflx"]),
-        ]
+             and gather["elapsed"] < unanswered["elapsed"] - TIMER_TOLERANCE_MS,
+             f"{gather['elapsed']} against {unanswered['elapsed']}"))
+    checks += [
+        ("HTTP proxy: a special-use STUN name gives no srflx",
+         via_http["srflx"] == [] and via_http["stats"] == [], via_http["srflx"]),
+        ("SOCKS5 refusing UDP: the one srflx carries the identity's address, in the SDP and getStats() too",
+         len(via_refused["srflx"]) == 1 and via_refused["srflx"][0].startswith(f"{SPOOFED_IP}:")
+         and via_refused["sdp"] == via_refused["srflx"] and via_refused["stats"] == via_refused["srflx"],
+         f"{via_refused['srflx']} sdp {via_refused['sdp']} stats {via_refused['stats']}"),
+    ]
     checks += [
         ("SOCKS5 losing its control connection: the relay was in use when it went",
          hanging_up.hung_up >= 1, f"{hanging_up.hung_up} hang-ups"),

@@ -1,12 +1,14 @@
 diff --git a/remote/shared/WindowManager.sys.mjs b/remote/shared/WindowManager.sys.mjs
-index 6d1add9..9eb25a6 100644
+index 6d1add9..7bb7285 100644
 --- a/remote/shared/WindowManager.sys.mjs
 +++ b/remote/shared/WindowManager.sys.mjs
-@@ -409,6 +409,8 @@ class WindowManager {
+@@ -409,6 +409,10 @@ class WindowManager {
      } = options;
  
      switch (lazy.AppInfo.name) {
-+      // Camoufox is Firefox under another application name.
++      // Camoufox is Firefox under another application name, and so is
++      // AliasMode.
++      case "AliasMode":
 +      case "Camoufox":
        case "Firefox": {
          if (openerWindow === null) {

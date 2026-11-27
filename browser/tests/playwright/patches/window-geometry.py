@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from helpers import Marionette, marionette_args, resolve_binary  # noqa: E402
+from helpers import Marionette, marionette_args, marionette_env, resolve_binary  # noqa: E402
 
 CONFIG = {
     "screen.width": 1200, "screen.height": 740,
@@ -88,7 +88,7 @@ def launch(binary, profile, env=None):
     # Marionette writes the port it really listens on into the profile.
     return Camoufox(headless=True, executable_path=str(binary), args=marionette_args(),
                     persistent_context=True, user_data_dir=profile, config=CONFIG,
-                    env={**os.environ, **env} if env else None,
+                    env={**marionette_env(), **(env or {})},
                     main_world_eval=True, i_know_what_im_doing=True)
 
 

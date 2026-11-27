@@ -325,20 +325,49 @@ rules:
       throttled as in stock, so a command that waits for a frame waits
       until the window shows; input commands raise their tab and window
       first (PageTarget.activateAndRun).
-  - id: no-made-up-srflx
-    title: A srflx candidate comes only from a STUN answer
-    check: manual   # browser/tests/playwright/patches/webrtc-context-ip.py, webrtc-socks5-udp.py
+  - id: aliasmode-font-packs
+    title: "AliasMode: a font pack per OS, passed in aliasmode:fontsDir, instead of bundled font sets"
+    check: manual   # browser/tests/playwright/patches/context-lists-across-processes.py (Windows pack)
     evidence:
-      - "daijro/camoufox#997: the fabricated srflx is removed, and its guards now run against a STUN server that answers"
-      - "webrtc-socks5-udp.py: gathering behind a proxy with no UDP takes as long as against a STUN server that never answers"
+      - "AliasMode decision (docs/FONTS.md, font-pack-dir.patch): packages carry only Firefox's own fonts/; the app downloads one pack per OS (release asset aliasmode-fonts-<os>-<rev>.zip, pinned by SHA-256) and passes the folder of the identity's OS"
     rationale: >-
-      A srflx says the page's STUN server saw a Binding Request from that
-      address, and a page running its own server can tell it never did. Behind
-      a proxy with no UDP path, the page reads a machine whose UDP is blocked:
-      host candidates only, obfuscated even with capture permission, and
-      datagrams dropped silently so gathering times out as it does on a
-      firewalled machine. The identity's address replaces a srflx the browser
-      really gathered; it never invents one.
+      A native identity uses the host's fonts; an identity of another OS gets
+      that OS's pack, one per launch, and the content sandbox may read it. The
+      guards that need another OS's fonts take the pack from
+      ALIASMODE_FONT_PACKS (helpers.font_pack), which the CI unpacks.
+      context-os-system-font.py (a context of another OS on one browser) and
+      system-font-alias-stall.py (the Python launcher's macOS font bases)
+      tested Camoufox's bundle of every OS in one browser, which AliasMode
+      does not ship or use, and are not carried. driven-wheel-notches.py takes
+      the Linux line height from the page, since the host's sans-serif sets it.
+
+  - id: no-made-up-srflx
+    title: "AliasMode: behind a proxy without UDP, the page sees the ICE agent of the identity's network"
+    check: manual   # browser/tests/playwright/patches/webrtc-socks5-udp.py, webrtc-proxy-no-udp-around.py, webrtc-proxy-local-network.py
+    evidence:
+      - "AliasMode decision, 2026-11-26 (zzz-webrtc-ice-fallback.patch): a machine whose UDP is blocked is rarer on the sites AliasMode profiles visit than a srflx a page's STUN server never answered; the app's HTTP relay carries no UDP, so every proxied profile would read as UDP-blocked"
+      - "daijro/camoufox#997 removed Camoufox's fabricated srflx; its guards ran against a STUN server that answers"
+    rationale: >-
+      Behind a proxy that relays no UDP (an HTTP proxy, or a SOCKS5 proxy that
+      refuses UDP ASSOCIATE, which Juggler asks once when the proxy or its
+      credentials are set), the real agent does not gather. The ICE agent
+      behind the proxy shows what the identity's network would: mDNS host
+      candidates, a srflx with the identity's address one round trip after
+      the request for a STUN server that could answer, nICEr's errors and
+      timings for one that could not (loopback, a special-use name, a private
+      address), and checks that fail. Nothing is sent. The choice follows the
+      context's proxy only, so every peer connection of a context shows the
+      same network; with a TURN server over TCP or TLS the real agent also
+      gathers and checks through the proxy, for the relay a call needs, and
+      the agent behind the proxy adds the srflx and errors of the UDP
+      servers. Known gaps: a page that runs its own STUN server can tell no
+      Binding Request reached it; behind such a proxy a page's own two peer
+      connections do not connect, where stock's do over this host's address;
+      and with a TURN server over TCP or TLS gathering ends when the real
+      agent's does, after its UDP servers time out. aliasmode:webrtcFakeIce
+      false gives Camoufox's UDP-blocked machine instead. Behind a SOCKS5
+      proxy that relays UDP the real agent works through the relay and a
+      srflx comes only from a STUN answer.
 
   - id: juggler-records-the-proxy
     title: Juggler records which contexts are proxied, not the launcher and not the page
@@ -393,9 +422,10 @@ rules:
       canvas cannot agree with it (cross-os-canvas-is-the-rfp-placeholder).
 
   - id: audio-is-not-noised
-    title: The audio render is stock Firefox's, one value per CPU architecture, and there is no audio seed
+    title: The audio render is stock Firefox's, one value per CPU architecture; AliasMode keeps an audio seed nothing sends
     check: automated
     evidence:
+      - "AliasMode decision, 2026-11-27: zz-audio-fingerprint-manager.patch and zz-audio-noise-on-copy.patch keep audio:seed so a profile can get audio values of its own; the AliasMode app sends none (firefox-config.ts DROPPED_LAUNCH_KEYS) and neither launcher does, so a launch renders stock"
       - "issue #926 / PR #927. Study 2026-10-23: 106 runs of stock Firefox, probe = fingerprintjs (OfflineAudioContext 1x5000@44100, triangle 10 kHz into a compressor, sum of |samples| 4500..5000, and SHA-256 of the whole buffer), CreepJS AnalyserNode frequency/time-domain reads, a biquad lowpass and a plain sine. Data: audio-study/summary_all.txt and audio-study/results/ (kept outside the repo); the guard browser/tests/playwright/patches/audio-matches-stock.py carries the probe and the expected values"
       - "ARM64, all 45 runs FPJS 35.74996626004577, buffer sha 8e127fb8b39c...: Raspberry Pi 4 Model B (Cortex-A72, ARMv8.0, Debian 12 arm64), Firefox 158.0.1 and 152.0.3, headless and headed; Mac Studio, Apple M5 Ultra, macOS 27.0.1; Mac mini, Apple M4, macOS 27.0; GitHub macos-14/15/26 (Apple M1), ubuntu-24.04-arm (Neoverse-N2), windows-11-arm (Cobalt 100/200)"
       - "x86-64, all 61 runs FPJS 35.749972093850374, buffer sha dea0ebd60642...: Ryzen 7 9850X3D (Zen 5, AVX-512), Ubuntu 26.04, Firefox 152.0.3, 153.0, 156.0.1 and 158.0.1; i9-11900H, Windows 11 26200, Firefox 158.0.1 and 152.0.3; GitHub ubuntu-latest/22.04 on EPYC 7763 (Zen 3, AVX2) and 9V45/9V74 (AVX-512); GitHub windows-latest/2022 on EPYC; GitHub macos-15-intel on i7-8700B"
@@ -413,12 +443,15 @@ rules:
       one, which no real browser does either. The render is left as stock
       renders it, so it is the host's architecture's value, the same in every
       context and every launch, and a returning identity reproduces it
-      trivially (#442, #765). The audio-fingerprint-manager patch, its
-      per-context setter and the audio:seed key are gone; a caller passing
-      audio:seed gets a warning that it was removed, and the key is dropped
-      before it reaches the browser. build-tester counts
-      the audio hash with the values that must match across contexts, and the
-      audio-matches-stock guard checks the build against the recorded values.
+      trivially (#442, #765). Camoufox's audio-fingerprint-manager patch is
+      gone; a caller passing audio:seed to a launcher gets a warning that it
+      was removed, and the key is dropped before it reaches the browser.
+      AliasMode carries its own copy (zz-audio-fingerprint-manager.patch), so
+      the browser still honours audio:seed when a config sets it directly,
+      but the AliasMode app sends none: it measured the seeded render as the
+      tell described here. build-tester counts the audio hash with the values
+      that must match across contexts, and the audio-matches-stock guard
+      checks a launch without a seed against the recorded values.
 
   - id: canvas-follows-the-claimed-cpu-vendor
     title: A page computes as the claimed CPU does, Intel, AMD or ARM64; the x86 vendor is drawn at Firefox's x86 share

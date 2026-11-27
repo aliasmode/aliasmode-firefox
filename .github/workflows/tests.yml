@@ -1007,6 +1007,22 @@ jobs:
       # namespace, which Ubuntu's AppArmor denies to programs without a profile.
       - if: matrix.leg == 'spoofing'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # AliasMode packages carry no font sets (ci/tribal-rules.yml:
+      # aliasmode-font-packs): a guard whose identity is another OS's takes
+      # that OS's pack, the one the app pins (firefox-fonts.ts).
+      - if: matrix.leg == 'spoofing'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACK_RELEASE: aliasmode-runtime-156.0.1-beta.36-r4
+          PACK_SHA256: e5ed1bea592a0bf8e43f4564c83ce418cc823d2f605454b806c1744df8215410
+        run: |
+          mkdir -p .ci-work/font-packs
+          cd .ci-work/font-packs
+          gh release download "$PACK_RELEASE" -R "$GITHUB_REPOSITORY" -p aliasmode-fonts-windows-1.zip
+          echo "$PACK_SHA256  aliasmode-fonts-windows-1.zip" | sha256sum -c
+          unzip -q aliasmode-fonts-windows-1.zip -d windows
+          rm aliasmode-fonts-windows-1.zip
+          echo "ALIASMODE_FONT_PACKS=$PWD" >> "$GITHUB_ENV"
       - if: matrix.leg == 'parity'
         # windows-keyboard sends real X11 key events. libegl1: a display-less
         # headless launch probes Mesa through EGL (headless-software-webgl.patch).

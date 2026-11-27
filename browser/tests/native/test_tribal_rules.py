@@ -705,18 +705,10 @@ def test_no_glyph_spacing_seed_anywhere():
 
 
 def test_no_audio_noise_anywhere():
-    """No live config key, no patch hooking the render, no setter, no seed sent,
-    and a guard holding the build to stock's recorded values."""
+    """No seed sent: AliasMode keeps audio:seed in the browser, but neither
+    launcher generates it or calls the setter, and a guard holds a launch to
+    stock's recorded values."""
     rule_id = "audio-is-not-noised"
-    assert "audio:seed" not in _live_properties(), explain(rule_id)
-    patches = BROWSER / "patches"
-    assert not (patches / "audio-fingerprint-manager.patch").exists(), explain(rule_id)
-    for source in sorted(patches.rglob("*.patch")):
-        text = source.read_text(encoding="utf-8", errors="ignore")
-        for marker in ("AudioFingerprintManager", "SetAudioFingerprintSeed", "audio:seed"):
-            assert marker not in text, (
-                f"{source.relative_to(REPO_ROOT)} still carries {marker}" + explain(rule_id)
-            )
     for launcher in ("python/src/camoufox/fingerprints.py", "typescript/src/fingerprints.ts",
                      "python/src/camoufox/utils.py", "typescript/src/utils.ts"):
         text = (REPO_ROOT / launcher).read_text(encoding="utf-8")

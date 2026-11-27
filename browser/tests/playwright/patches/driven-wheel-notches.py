@@ -4,7 +4,9 @@ mouse.wheel() reaches the page as a mouse wheel does in stock Firefox.
 A wheel turns in notches. On Linux (GTK, X11) stock Firefox 158.0.1 delivers
 each notch as its own `wheel` event: deltaMode 1 (lines), deltaY 6,
 wheelDeltaY -120, then DOMMouseScroll with detail 3 and MozMousePixelScroll
-with detail 60 (three 20 px lines), and the scroller moves 120 px per notch.
+with detail 60 (three 20 px lines), and the scroller moves 120 px per notch
+(six lines). The line is the scroller's line height, which follows the
+page's font: on an AliasMode package, the host's.
 Measured with XTest button 5 on Xvfb (three runs,
 identical). docs/input-dispatch.md has the Windows measurement, which has the
 same shape.
@@ -51,14 +53,15 @@ RECORD = """() => {
   for (const t of ['wheel', 'DOMMouseScroll', 'MozMousePixelScroll']) s.addEventListener(t, on);
 }"""
 
-# stock 158.0.1, GTK/X11, one notch
-NOTCH = [["wheel", 1, 0, 6, -120], ["DOMMouseScroll", 3], ["MozMousePixelScroll", 60]]
-NOTCH_PX = 120
+# stock 158.0.1, GTK/X11, one notch: three lines of the scroller's line height
+# (20 px with Camoufox's bundled fonts). AliasMode packages carry no fonts, so
+# the page's sans-serif and its line are the host's, as in stock on that host:
+# the Linux check takes the line from the first notch, as the macOS one does.
 
 
-def notched(n):
+def notched(n, line):
     """One event carrying n notches: each field is n times one notch's."""
-    return [["wheel", 1, 0, 6 * n, -120 * n], ["DOMMouseScroll", 3 * n], ["MozMousePixelScroll", 60 * n]]
+    return [["wheel", 1, 0, 6 * n, -120 * n], ["DOMMouseScroll", 3 * n], ["MozMousePixelScroll", 3 * line * n]]
 
 
 def probe(binary, os, turns):
@@ -113,13 +116,17 @@ def main() -> int:
         got = probe(binary, "linux", (("one", 100), ("three", 300), ("short", 30)))
         mac = probe(binary, "macos", (("slow", 16), ("turn", 100), ("long", 1000)))
     failures = mac_failures(mac)
+    pixels = [e[1] for e in got["one"][0] if e[0] == "MozMousePixelScroll"]
+    line = pixels[0] // 3 if pixels and pixels[0] % 3 == 0 else None
+    if not line:
+        failures.append(f"mouse.wheel (one) carried MozMousePixelScroll {pixels}: not three whole lines")
     for name, notches in (("one", 1), ("three", 3), ("short", 1)):
         events, scrolled = got[name]
         shape = [e[:5] if e[0] == "wheel" else e for e in events]
-        if shape != notched(notches):
-            failures.append(f"mouse.wheel ({name}) delivered {shape}, expected {notched(notches)}")
-        if scrolled != NOTCH_PX * notches:
-            failures.append(f"mouse.wheel ({name}) scrolled {scrolled} px, stock {NOTCH_PX * notches}")
+        if line and shape != notched(notches, line):
+            failures.append(f"mouse.wheel ({name}) delivered {shape}, expected {notched(notches, line)}")
+        if line and scrolled != 6 * line * notches:
+            failures.append(f"mouse.wheel ({name}) scrolled {scrolled} px, stock {6 * line * notches}")
     for failure in failures:
         print(f"FAIL: {failure}")
     if failures:

@@ -32,7 +32,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from helpers import resolve_binary  # noqa: E402
+from helpers import font_pack, resolve_binary  # noqa: E402
 
 CAMOUFOX = Path(__file__).resolve().parents[4] / "python" / "src" / "camoufox"
 
@@ -78,7 +78,10 @@ async def main() -> int:
     port = server.server_address[1]
 
     # The launch level allows every candidate; the context narrows both lists.
-    async with AsyncCamoufox(headless=True, os="windows", config={"fonts": candidates},
+    # AliasMode packages carry no Windows fonts; the app passes the pack.
+    pack = font_pack("windows")
+    async with AsyncCamoufox(headless=True, os="windows", config={"fonts": candidates, **pack["config"]},
+                             firefox_user_prefs=pack["firefox_user_prefs"],
                              i_know_what_im_doing=True,
                              executable_path=str(resolve_binary())) as browser:
         launch_page = await browser.new_page()

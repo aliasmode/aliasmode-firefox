@@ -4,20 +4,18 @@ The build renders Web Audio exactly as stock Firefox does on this CPU.
 Stock Firefox has one audio fingerprint per CPU architecture. The OS, the
 sound card, the sample rate and the Firefox version do not move it, so a value
 off those two is one no real machine produces (ci/tribal-rules.yml:
-audio-is-not-noised). Camoufox used to noise the render with a seed per
-identity (audio-fingerprint-manager.patch); that patch is gone.
+audio-is-not-noised).
 
-Released libraries still send that seed: audio:seed in CAMOU_CONFIG at launch,
-and window.setAudioFingerprintSeed() in each NewContext's init script. This
-guard sends both, as they do, and checks that nothing moves the render:
+AliasMode keeps audio:seed (zz-audio-fingerprint-manager.patch), but its app
+sends none, and neither launcher does, so a launch renders stock audio. This
+guard launches as they do, without a seed, and checks that:
 
   * the fingerprintjs render (sum of samples 4500..5000, and the SHA-256 of the
     whole buffer), the CreepJS AnalyserNode reads (getFloatFrequencyData and
     getFloatTimeDomainData), a biquad filter and a plain sine all equal the
     recorded stock values for this host's architecture;
-  * in the default context, in a NewContext identity claiming another OS, in a
-    context whose init script calls the old per-context setter, and in a
-    second launch.
+  * in the default context, in a NewContext identity claiming another OS, and
+    in a second launch.
 
 Provenance of EXPECTED: the 2026-10 audio study (audio-study/probe/probe.html,
 the same graphs as PROBE below), 103 runs of stock Firefox 152-158.
@@ -30,7 +28,7 @@ the same graphs as PROBE below), 103 runs of stock Firefox 152-158.
 Every run of an architecture gave the same values, to the bit.
 
 What PASS means: every probe in every context and launch equals EXPECTED for
-this architecture. On v158.0-beta.40 (noised) it fails.
+this architecture. With an audio:seed it fails.
 
     python browser/tests/playwright/patches/audio-matches-stock.py
 """
@@ -38,8 +36,6 @@ this architecture. On v158.0-beta.40 (noised) it fails.
 import platform
 import sys
 from pathlib import Path
-
-import orjson
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers import launch_kwargs  # noqa: E402
@@ -65,10 +61,6 @@ EXPECTED = {
     },
 }
 ARCH = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "arm64", "arm64": "arm64"}
-
-# What a released library sends: any non-zero seed noised the old build.
-OLD_SEED = 424242
-OLD_SETTER = f"window.setAudioFingerprintSeed && window.setAudioFingerprintSeed({OLD_SEED});"
 
 # Rendered offline, so no audio device is needed. Every buffer is copied into an
 # array of the probe's own (copyFromChannel, or the analyser filling it): this
@@ -156,22 +148,11 @@ PROBE = """async () => {
 }"""
 
 
-def released_library_options() -> dict:
-    """This library's launch options, plus the audio:seed a released one sends."""
-    from camoufox.utils import get_env_vars, launch_options
+def launch_without_seed() -> dict:
+    """This library's launch options: no audio:seed, as the AliasMode app sends none."""
+    from camoufox.utils import launch_options
 
-    options = launch_options(**launch_kwargs(os="linux", i_know_what_im_doing=True))
-    env = options["env"]
-    chunks = sorted((int(k.rsplit("_", 1)[1]), k) for k in env if k.startswith("CAMOU_CONFIG_"))
-    config = orjson.loads("".join(env.pop(k) for _, k in chunks))
-    config["audio:seed"] = OLD_SEED
-    # The binary under test's bundle, as launch_options passes it. Without a
-    # path, get_env_vars finds its fontconfig in the installed release, and on
-    # a runner with none it fetched one from the GitHub API (rate-limited, 403).
-    binary = Path(options["executable_path"])
-    env.update({k: v for k, v in get_env_vars(config, "lin", path=binary).items()
-                if k.startswith("CAMOU_CONFIG_")})
-    return options
+    return launch_options(**launch_kwargs(os="linux", i_know_what_im_doing=True))
 
 
 def render(context) -> dict:
@@ -190,13 +171,10 @@ def main() -> int:
     expected = EXPECTED[arch]
 
     seen = {}
-    with Camoufox(from_options=released_library_options()) as browser:
+    with Camoufox(from_options=launch_without_seed()) as browser:
         seen["default context"] = render(browser.new_context())
         seen["NewContext claiming Windows"] = render(NewContext(browser, os="windows"))
-        old = browser.new_context()
-        old.add_init_script(OLD_SETTER)
-        seen["context calling setAudioFingerprintSeed"] = render(old)
-    with Camoufox(from_options=released_library_options()) as browser:
+    with Camoufox(from_options=launch_without_seed()) as browser:
         seen["second launch"] = render(browser.new_context())
 
     failures = []
@@ -211,7 +189,7 @@ def main() -> int:
         print(f"FAIL: {failure} (stock {arch}: {expected})")
     if failures:
         return 1
-    print(f"PASS: every context and launch renders stock {arch} audio, seed or no seed.")
+    print(f"PASS: every context and launch renders stock {arch} audio.")
     return 0
 
 
