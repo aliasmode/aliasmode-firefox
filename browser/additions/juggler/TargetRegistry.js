@@ -167,10 +167,13 @@ async function socksRelaysUdp(proxy) {
   };
   const utf8 = text => Array.from(new TextEncoder().encode(text || ''));
   const associate = async () => {
-    const credentials = !!(proxy.username || proxy.password);
-    await send(credentials ? [5, 2, 0, 2] : [5, 1, 0]);
+    // Both methods, so a proxy that wants credentials Juggler has not got yet
+    // asks for them and is told nothing, rather than seeing a session without.
+    await send([5, 2, 0, 2]);
     const [, method] = await read(2);
     if (method === 2) {
+      if (!proxy.username && !proxy.password)
+        return false;
       const username = utf8(proxy.username);
       const password = utf8(proxy.password);
       await send([1, username.length, ...username, password.length, ...password]);
