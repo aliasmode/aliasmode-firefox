@@ -18,7 +18,7 @@ diff --git a/dom/base/WebRTCIPManager.cpp b/dom/base/WebRTCIPManager.cpp
  
  namespace mozilla {
  namespace dom {
-@@ -35,6 +36,32 @@ WebRTCIPManager::IsProxied(uint32_t userContextId) {
+@@ -35,6 +36,34 @@ WebRTCIPManager::IsProxied(uint32_t userContextId) {
            proxied);
  }
  
@@ -38,8 +38,10 @@ diff --git a/dom/base/WebRTCIPManager.cpp b/dom/base/WebRTCIPManager.cpp
 +                                          value) &&
 +          value)) {
 +      // No Juggler proxy: one from network.proxy.* relays UDP when it is SOCKS5.
++      nsAutoCString socks;
++      Preferences::GetCString("network.proxy.socks", socks);
 +      return Preferences::GetInt("network.proxy.type", 0) == 1 &&
-+             !Preferences::GetCString("network.proxy.socks").IsEmpty() &&
++             !socks.IsEmpty() &&
 +             Preferences::GetInt("network.proxy.socks_version", 5) == 5;
 +    }
 +    udpKey.AssignLiteral(u"webrtc_proxy_udp_browser");
