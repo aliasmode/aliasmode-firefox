@@ -1,8 +1,10 @@
 name: Watch Camoufox releases
 
-# Daily check: fails, so GitHub emails a failed-run notice, when Camoufox has released a
-# build on a newer Firefox than our newest AliasMode Firefox runtime. It passes again once
-# an aliasmode-runtime release on that Firefox version is published here.
+# Daily check: fails, so GitHub emails a failed-run notice, when Camoufox has published a
+# browser release (vFIREFOX-beta.N) newer than the one our newest AliasMode Firefox runtime
+# is built on. It compares the whole Camoufox tag, so a new beta.N on the same Firefox
+# version counts too. It passes again once an aliasmode-runtime release on that Camoufox
+# release is published here.
 on:
   schedule:
     - cron: "17 7 * * *"
@@ -15,20 +17,27 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: Compare Camoufox's Firefox version with ours
+      - name: Compare Camoufox's newest browser release with ours
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          upstream_tag=$(gh api "repos/daijro/camoufox/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name')
-          ours_tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" --jq '[.[] | select(.tag_name | startswith("aliasmode-runtime-"))][0].tag_name')
-          upstream=$(printf '%s' "$upstream_tag" | sed -E 's/^v?([0-9]+(\.[0-9]+)*).*/\1/')
-          ours=$(printf '%s' "$ours_tag" | sed -E 's/^aliasmode-runtime-([0-9]+(\.[0-9]+)*).*/\1/')
-          echo "Camoufox: $upstream_tag (Firefox $upstream)"
-          echo "AliasMode Firefox: $ours_tag (Firefox $ours)"
-          newest=$(printf '%s\n%s\n' "$upstream" "$ours" | sort -V | tail -n 1)
-          if [ "$newest" != "$ours" ]; then
-            echo "::error title=Camoufox moved to Firefox $upstream::Camoufox $upstream_tag is on Firefox $upstream; AliasMode Firefox is on $ours ($ours_tag). https://github.com/daijro/camoufox/releases/tag/$upstream_tag"
+          # Browser releases only: library releases (vX.Y.Z) share the release list.
+          upstream_tag=$(gh api "repos/daijro/camoufox/releases?per_page=100" \
+            --jq '[.[] | select((.draft | not) and (.tag_name | test("^v[0-9]+(\\.[0-9]+)*-beta\\.[0-9]+$")))][0].tag_name')
+          ours_tag=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name | test("^aliasmode-runtime-[0-9]+(\\.[0-9]+)*-beta\\.[0-9]+-r[0-9]+$"))][0].tag_name')
+          if [ -z "$upstream_tag" ] || [ -z "$ours_tag" ]; then
+            echo "::error::Could not read the release tags (Camoufox: '${upstream_tag}', ours: '${ours_tag}')"
             exit 1
           fi
-          echo "AliasMode Firefox is on Camoufox's Firefox version."
+          upstream=${upstream_tag#v}
+          ours=$(printf '%s' "$ours_tag" | sed -E 's/^aliasmode-runtime-(.*)-r[0-9]+$/\1/')
+          echo "Camoufox: $upstream_tag"
+          echo "AliasMode Firefox: $ours_tag (Camoufox $ours)"
+          newest=$(printf '%s\n%s\n' "$upstream" "$ours" | sort -V | tail -n 1)
+          if [ "$newest" != "$ours" ]; then
+            echo "::error title=Camoufox released $upstream_tag::Camoufox $upstream_tag is newer than the Camoufox release AliasMode Firefox is built on ($ours, $ours_tag). https://github.com/daijro/camoufox/releases/tag/$upstream_tag"
+            exit 1
+          fi
+          echo "AliasMode Firefox is on Camoufox's newest browser release."
