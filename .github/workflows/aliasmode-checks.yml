@@ -14,48 +14,7 @@ permissions:
   actions: read
 
 jobs:
-  focus:
-    name: Focus experiment ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {os: macos-15, artifact: AliasModeBuilds-macos-arm64}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Fetch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh run download "$BUILD_RUN" -R "$GITHUB_REPOSITORY" -n "${{ matrix.artifact }}" -D dl
-          mkdir -p ours stock up
-          unzip -q dl/*.zip -d ours
-          curl -sSfL -o ff.dmg "https://archive.mozilla.org/pub/firefox/releases/159.0/mac/en-US/Firefox%20159.0.dmg"
-          hdiutil attach -nobrowse -mountpoint /tmp/ffdmg ff.dmg > /dev/null
-          cp -R /tmp/ffdmg/Firefox.app stock/
-          hdiutil detach /tmp/ffdmg > /dev/null
-          gh release download v159.0-beta.43 -R daijro/camoufox -p "camoufox-159.0-beta.43-mac.arm64.zip" -D upz
-          unzip -q upz/*.zip -d up
-          xattr -cr ours stock up || true
-      - run: |
-          mkdir signed && cp -R ours/AliasMode.app signed/ && codesign --force --deep -s - signed/AliasMode.app && codesign -dv signed/AliasMode.app 2>&1 | head -5
-          codesign -dv stock/Firefox.app 2>&1 | head -8; codesign -dv ours/AliasMode.app 2>&1 | head -5
-          lsappinfo front; lsappinfo info -only name "$(lsappinfo front)"
-          python3 .github/aliasmode-checks/focus.py "$PWD/ours/AliasMode.app/Contents/MacOS/aliasmode" "$PWD/stock/Firefox.app/Contents/MacOS/firefox" "$(ls -d "$PWD"/up/*.app)/Contents/MacOS/camoufox" "$PWD/signed/AliasMode.app/Contents/MacOS/aliasmode"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: focus-${{ matrix.os }}
-          path: focus.json
-
   guards:
-    if: false
     name: Guards ${{ matrix.group }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -96,7 +55,6 @@ jobs:
       - run: xvfb-run -a python3 -m ci.run_patch_guards --group "${{ matrix.group }}" --binary "$CAMOUFOX_BINARY"
 
   behaviour:
-    if: false
     name: Behaviour ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

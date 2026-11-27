@@ -85,6 +85,8 @@ PREFS = {
     "toolkit.telemetry.reportingpolicy.firstRun": False,
     "browser.startup.page": 0,
     "browser.tabs.warnOnClose": False,
+    # What the AliasMode app sets without a proxy (firefox-worker.mjs).
+    "media.peerconnection.ice.default_address_only": True,
 }
 
 CHROME = """const done = arguments[arguments.length - 1];
@@ -134,20 +136,22 @@ setTimeout(() => done(wins.length), 1500);"""
 ICE = """const done = arguments[arguments.length - 1];
 (async () => {
   const out = {};
-  for (const [label, servers] of [["none", []], ["stun", [{urls: "stun:stun.l.google.com:19302"}]]]) {
+  const stun = [{urls: "stun:stun.l.google.com:19302"}];
+  for (const [label, servers, media] of [["none", [], ["data"]], ["stun", stun, ["data"]],
+                                         ["stun-av", stun, ["audio", "video"]]]) {
     const pc = new RTCPeerConnection({iceServers: servers});
-    pc.createDataChannel("x");
+    for (const kind of media) { if (kind === "data") pc.createDataChannel("x"); else pc.addTransceiver(kind); }
     const cands = [];
     const start = performance.now();
     const finished = new Promise(r => {
-      pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) cands.push(e.candidate.candidate); else r(); };
+      pc.onicecandidate = e => { if (e.candidate && e.candidate.candidate) cands.push([e.candidate.sdpMid, e.candidate.candidate]); else if (!e.candidate) r(); };
       setTimeout(r, 15000);
     });
     await pc.setLocalDescription(await pc.createOffer());
     await finished;
-    out[label] = {ms: Math.round(performance.now() - start), candidates: cands.map(c => {
+    out[label] = {ms: Math.round(performance.now() - start), candidates: cands.map(([mid, c]) => {
       const f = c.split(" ");
-      return {type: f[7], protocol: f[2].toLowerCase(), mdns: f[4].endsWith(".local"), tcptype: f[8] === "tcptype" ? f[9] : null};
+      return {mid, component: f[1], type: f[7], protocol: f[2].toLowerCase(), mdns: f[4].endsWith(".local"), tcptype: f[8] === "tcptype" ? f[9] : null};
     })};
     pc.close();
   }
@@ -169,6 +173,13 @@ def run_browser(binary):
         try:
             m = Marionette(port)
             time.sleep(4)
+            if sys.platform == "darwin":
+                # Both browsers frontmost, as a user's is. Launched by the
+                # runner, stock Firefox stays behind Finder while AliasMode
+                # comes to the front, and an inactive app gets no focus back
+                # when its other window closes.
+                subprocess.run(["open", "-a", binary.split(".app/")[0] + ".app"], timeout=20)
+                time.sleep(2)
             m.context("chrome")
             result["version"] = m.js("arguments[0](Services.appinfo.version)")
             result["chrome"] = m.js(CHROME)
@@ -209,8 +220,9 @@ def compare(ours, stock):
     for step in ("focus_start", "focus_behind", "focus_back"):
         if ours[step] != stock[step]:
             diffs.append(f"{step} {ours[step]} vs stock {stock[step]}")
-    for label in ("none", "stun"):
-        kinds = lambda r: sorted((c["type"], c["protocol"], c["mdns"], c["tcptype"]) for c in r["ice"][label]["candidates"])
+    for label in ("none", "stun", "stun-av"):
+        kinds = lambda r: sorted((c["mid"], c["component"], c["type"], c["protocol"], c["mdns"], c["tcptype"])
+                                 for c in r["ice"][label]["candidates"])
         if kinds(ours) != kinds(stock):
             diffs.append(f"ICE {label}: {kinds(ours)} vs stock {kinds(stock)}")
     return diffs
