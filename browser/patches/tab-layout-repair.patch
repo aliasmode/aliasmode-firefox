@@ -1,6 +1,8 @@
 AliasMode: repair saved toolbar layouts whose new tab and tab list buttons an
 earlier AliasMode extension-pinning hook moved from the tab strip to the nav
-bar (CustomizableUI migration step 29; Firefox 159 uses 27 and 28).
+bar (CustomizableUI migration step 29; Firefox 159 uses 27 and 28). AliasMode
+Firefox 156 saved version 27 for that repair, so those profiles still take
+Firefox 159's own step 27.
 
 diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/components/customizableui/CustomizableUI.sys.mjs
 --- a/browser/components/customizableui/CustomizableUI.sys.mjs
@@ -14,7 +16,20 @@ diff --git a/browser/components/customizableui/CustomizableUI.sys.mjs b/browser/
  
  /**
   * Buttons removed from built-ins by version they were removed. kVersion must be
-@@ -1045,6 +1045,33 @@ var CustomizableUIInternal = {
+@@ -544,6 +544,12 @@ var CustomizableUIInternal = {
+     }
+ 
+     let currentVersion = gSavedState.currentVersion;
++    // AliasMode: AliasMode Firefox 156 saved version 27 for its own repair
++    // step below, where stock Firefox 156 saves 26, so those profiles still
++    // take Firefox 159's own step 27, as a stock upgrade from 156 does.
++    if (currentVersion == 27) {
++      currentVersion = 26;
++    }
+     for (let [id, widget] of gPalette) {
+       if (widget.defaultArea) {
+         let shouldAdd = false;
+@@ -1045,6 +1051,33 @@ var CustomizableUIInternal = {
          CustomizableUIInternal.saveHorizontalTabStripState(horizontalSnapshot);
        }
      }

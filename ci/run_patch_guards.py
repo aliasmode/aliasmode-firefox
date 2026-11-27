@@ -134,6 +134,7 @@ GROUPS: Dict[str, Tuple[str, ...]] = {
         "stock-gpu-parity",
         "stock-parity-probes",
         "system-font-size-windows",
+        "toolbar-state-from-156",
         "tracking-protection-lists",
         "viewport-no-rdm",
         "virtual-display-window-visible",
