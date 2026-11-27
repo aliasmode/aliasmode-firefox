@@ -1,0 +1,96 @@
+name: Build AliasMode Firefox
+
+# AliasMode's engine build, on the browser/ layout of Camoufox 159. Every job runs
+# on GitHub's free ubuntu-24.04 runners and cross-compiles the Windows and macOS
+# targets. A manual run chooses its targets; it never publishes a release.
+# aliasmode-runtime-* releases are published by hand from a run's artifacts.
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: 'Targets to build, as a JSON list such as [{"target":"macos","arch":"arm64"}]'
+        required: false
+        default: '[{"target":"windows","arch":"x86_64"}]'
+      preflight:
+        description: "Configure and compile only what the patches touch (browser/scripts/preflight.py), without linking or packaging"
+        required: false
+        type: boolean
+        default: false
+      font_packs:
+        description: "Also build the per-OS font packs (only when the packs change)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      # Every target builds to the end, so one run reports every broken target.
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.targets) }}
+    env:
+      # `make dir` (inside ci.run_prepare) writes the mozconfig for this target.
+      BUILD_TARGET: ${{ matrix.target }},${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The disk space, packages and swap a browser build needs.
+      - uses: ./.github/actions/build-host
+        with:
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+
+      - name: Prepare the source tree
+        # setup-minimal (the Firefox tarball) -> dir (additions and patches) ->
+        # mozbootstrap, retrying the network-bound steps.
+        run: python3 -m ci.run_prepare
+
+      - name: Build
+        working-directory: browser
+        env:
+          # Cap Rust parallelism to lower peak memory (avoids OOM/SIGTERM).
+          CARGO_BUILD_JOBS: "1"
+        run: python3 multibuild.py --target ${{ matrix.target }} --arch ${{ matrix.arch }} ${{ inputs.preflight && '--preflight' || '' }}
+
+      - name: SHA256 of the package
+        if: ${{ !inputs.preflight }}
+        working-directory: browser/dist
+        run: sha256sum aliasmode-*.zip | tee SHA256SUMS-${{ matrix.target }}-${{ matrix.arch }}
+
+      - name: Upload artifacts
+        if: ${{ !inputs.preflight }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: AliasModeBuilds-${{ matrix.target }}-${{ matrix.arch }}
+          path: browser/dist/*
+          compression-level: 0
+
+  font-packs:
+    # One zip of fonts per OS family (scripts/package-font-packs.py). The engine
+    # packages carry none; the app downloads the pack a profile needs.
+    if: ${{ inputs.font_packs }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build font packs
+        working-directory: browser
+        run: make font-packs
+
+      - name: Upload font packs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: AliasModeFontPacks
+          path: browser/dist/*
+          compression-level: 0
