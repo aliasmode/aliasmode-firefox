@@ -40,7 +40,7 @@ from helpers import Marionette, marionette_args, marionette_env, resolve_binary 
 CONFIG = {
     "screen.width": 1200, "screen.height": 740,
     "screen.availLeft": 0, "screen.availTop": 0, "screen.availWidth": 1200, "screen.availHeight": 692,
-    "window.outerWidth": 1500, "window.outerHeight": 1000,
+    "window.outerWidth": 1500, "window.outerHeight": 1000, "window.screenX": 0, "window.screenY": 0,
     "aliasmode:windowLabel": "Profile 7",
 }
 SMALL_SCREEN = {"MOZ_HEADLESS_WIDTH": "1100", "MOZ_HEADLESS_HEIGHT": "650"}
