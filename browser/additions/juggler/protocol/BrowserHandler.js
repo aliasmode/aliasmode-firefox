@@ -181,12 +181,12 @@ export class BrowserHandler {
   }
 
   async ['Browser.setBrowserProxy']({type, host, port, bypass, username, password}) {
-    this._targetRegistry.setBrowserProxy({ type, host, port, bypass, username, password});
+    await this._targetRegistry.setBrowserProxy({ type, host, port, bypass, username, password});
   }
 
   async ['Browser.setContextProxy']({browserContextId, type, host, port, bypass, username, password}) {
     const browserContext = this._targetRegistry.browserContextForId(browserContextId);
-    browserContext.setProxy({ type, host, port, bypass, username, password });
+    await browserContext.setProxy({ type, host, port, bypass, username, password });
   }
 
   ['Browser.setRequestInterception']({browserContextId, enabled}) {

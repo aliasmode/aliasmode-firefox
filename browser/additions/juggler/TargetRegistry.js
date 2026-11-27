@@ -105,15 +105,96 @@ function withProxyAuth(proxy, auth) {
 
 // Camoufox: WebRTC must not gather around a Juggler proxy, which is not in
 // network.proxy.*. WebRTCIPManager::IsProxied reads this in the content process.
-function recordProxied(owner, proxy) {
+function recordProxied(owner) {
   Services.prefs.getDefaultBranch('roverfox.s.').setCharPref(`webrtc_proxied_${owner}`, '1');
-  // AliasMode: whether the proxy may relay UDP (SOCKS5). WebRTC behind one that
-  // cannot gets the ICE agent behind the proxy (zzz-webrtc-ice-fallback.patch).
-  Services.prefs.getDefaultBranch('roverfox.s.').setCharPref(`webrtc_proxy_udp_${owner}`, proxy?.type === 'socks' ? '1' : '0');
+  // AliasMode: no UDP relay until recordProxyUdp has one.
+  Services.prefs.getDefaultBranch('roverfox.s.').setCharPref(`webrtc_proxy_udp_${owner}`, '0');
   // Firefox turns prefetch off at its first proxied load. A document with no
   // load yet (about:blank, a fulfilled route) would resolve its dns-prefetch
   // links on this machine's resolver until then.
   Services.prefs.getDefaultBranch('network.dns.').setBoolPref('disablePrefetch', true);
+}
+
+// AliasMode: whether the proxy relays UDP: a SOCKS5 proxy that grants UDP
+// ASSOCIATE (RFC 1928, with RFC 1929 credentials). Many refuse it, and WebRTC
+// behind one that does, as behind an HTTP proxy, gets the ICE agent behind the
+// proxy (zzz-webrtc-ice-fallback.patch) instead of a machine whose UDP is
+// blocked. The protocol call that set the proxy waits for the answer, so every
+// connection of the context sees the same one. The latest call for an owner
+// wins: credentials can follow the proxy (setInitScripts).
+const kSocksProbeMs = 5000;
+const proxyUdpProbes = new Map();
+
+async function recordProxyUdp(owner, proxy) {
+  const probe = socksRelaysUdp(proxy);
+  proxyUdpProbes.set(owner, probe);
+  const udp = await probe;
+  if (proxyUdpProbes.get(owner) !== probe)
+    return;
+  proxyUdpProbes.delete(owner);
+  Services.prefs.getDefaultBranch('roverfox.s.').setCharPref(`webrtc_proxy_udp_${owner}`, udp ? '1' : '0');
+}
+
+async function socksRelaysUdp(proxy) {
+  if (proxy?.type !== 'socks')
+    return false;
+  const sts = Cc['@mozilla.org/network/socket-transport-service;1'].getService(Ci.nsISocketTransportService);
+  const transport = sts.createTransport([], bareHost(proxy.host), proxy.port, null, null);
+  const input = transport.openInputStream(0, 0, 0).QueryInterface(Ci.nsIAsyncInputStream);
+  const output = transport.openOutputStream(0, 0, 0).QueryInterface(Ci.nsIAsyncOutputStream);
+  const reader = Cc['@mozilla.org/binaryinputstream;1'].createInstance(Ci.nsIBinaryInputStream);
+  reader.setInputStream(input);
+  const writer = Cc['@mozilla.org/binaryoutputstream;1'].createInstance(Ci.nsIBinaryOutputStream);
+  writer.setOutputStream(output);
+  const send = bytes => new Promise((resolve, reject) => output.asyncWait({
+    onOutputStreamReady() {
+      try {
+        writer.writeByteArray(bytes);
+        resolve();
+      } catch (e) {
+        reject(e);
+      }
+    },
+  }, 0, 0, Services.tm.mainThread));
+  const received = [];
+  const read = async count => {
+    while (received.length < count) {
+      await new Promise(resolve => input.asyncWait({onInputStreamReady: resolve}, 0, 0, Services.tm.mainThread));
+      // Throws once the proxy has closed the connection.
+      received.push(...reader.readByteArray(input.available()));
+    }
+    return received.splice(0, count);
+  };
+  const utf8 = text => Array.from(new TextEncoder().encode(text || ''));
+  const associate = async () => {
+    const credentials = !!(proxy.username || proxy.password);
+    await send(credentials ? [5, 2, 0, 2] : [5, 1, 0]);
+    const [, method] = await read(2);
+    if (method === 2) {
+      const username = utf8(proxy.username);
+      const password = utf8(proxy.password);
+      await send([1, username.length, ...username, password.length, ...password]);
+      if ((await read(2))[1] !== 0)
+        return false;
+    } else if (method !== 0) {
+      return false;
+    }
+    await send([5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
+    const [, reply] = await read(2);
+    return reply === 0;
+  };
+  let timer;
+  try {
+    return await Promise.race([
+      associate(),
+      new Promise(resolve => timer = setTimeout(() => resolve(false), kSocksProbeMs)),
+    ]);
+  } catch (e) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+    transport.close(Cr.NS_OK);
+  }
 }
 
 // Camoufox: every juggler browser context is a Firefox container. A PUBLIC
@@ -491,8 +572,9 @@ export class TargetRegistry {
 
   setBrowserProxy(proxy) {
     this._browserProxy = withProxyAuth(proxy, this._launchProxyAuth);
-    recordProxied('browser', proxy);
+    recordProxied('browser');
     this._updateProxiesWithSameAuthCacheAndDifferentCredentials();
+    return recordProxyUdp('browser', this._browserProxy);
   }
 
   getProxyInfo(channel) {
@@ -1549,8 +1631,9 @@ class BrowserContext {
     // Clear AuthCache.
     Services.obs.notifyObservers(null, "net:clear-active-logins");
     this._proxy = withProxyAuth(proxy, this._proxyAuth);
-    recordProxied(this.userContextId, proxy);
+    recordProxied(this.userContextId);
     this._registry._updateProxiesWithSameAuthCacheAndDifferentCredentials();
+    return recordProxyUdp(this.userContextId, this._proxy);
   }
 
   setIgnoreHTTPSErrors(ignoreHTTPSErrors) {
@@ -1611,6 +1694,8 @@ class BrowserContext {
       this._proxyAuth = auth;
       this._proxy = withProxyAuth(this._proxy, auth);
       this._registry._updateProxiesWithSameAuthCacheAndDifferentCredentials();
+      if (this._proxy)
+        await recordProxyUdp(this.userContextId, this._proxy);
     }
     this.crossProcessCookie.initScripts = rest;
     this._updateCrossProcessCookie();
