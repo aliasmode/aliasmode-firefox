@@ -43,7 +43,11 @@ jobs:
           gh release download v159.0-beta.43 -R daijro/camoufox -p "camoufox-159.0-beta.43-mac.arm64.zip" -D upz
           unzip -q upz/*.zip -d up
           xattr -cr ours stock up || true
-      - run: python3 .github/aliasmode-checks/focus.py "$PWD/ours/AliasMode.app/Contents/MacOS/aliasmode" "$PWD/stock/Firefox.app/Contents/MacOS/firefox" "$(ls -d "$PWD"/up/*.app)/Contents/MacOS/camoufox"
+      - run: |
+          mkdir signed && cp -R ours/AliasMode.app signed/ && codesign --force --deep -s - signed/AliasMode.app && codesign -dv signed/AliasMode.app 2>&1 | head -5
+          codesign -dv stock/Firefox.app 2>&1 | head -8; codesign -dv ours/AliasMode.app 2>&1 | head -5
+          lsappinfo front; lsappinfo info -only name "$(lsappinfo front)"
+          python3 .github/aliasmode-checks/focus.py "$PWD/ours/AliasMode.app/Contents/MacOS/aliasmode" "$PWD/stock/Firefox.app/Contents/MacOS/firefox" "$(ls -d "$PWD"/up/*.app)/Contents/MacOS/camoufox" "$PWD/signed/AliasMode.app/Contents/MacOS/aliasmode"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

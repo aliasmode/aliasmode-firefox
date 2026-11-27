@@ -23,6 +23,13 @@ for (const t of ["focus", "blur", "activate", "deactivate"]) first.addEventListe
 done(true);"""
 READTRACE = "arguments[arguments.length - 1](window.__trace)"
 
+def front():
+    try:
+        asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True, timeout=10).stdout.strip()
+        return subprocess.run(["lsappinfo", "info", "-only", "name", asn], capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception as e:
+        return repr(e)
+
 def run(binary, prefs, other_focus):
     port = free_port()
     with tempfile.TemporaryDirectory(prefix="focus-") as profile:
@@ -38,10 +45,10 @@ def run(binary, prefs, other_focus):
             m = Marionette(port); time.sleep(4)
             m.context("content"); m.call("WebDriver:Navigate", {"url": "data:text/html,<title>probe</title>probe"})
             out["start"] = m.js(LISTEN)
-            m.context("chrome"); m.js(TRACE); out["state0"] = m.js(STATE)
-            m.js(OTHER % other_focus); out["state1"] = m.js(STATE)
+            m.context("chrome"); m.js(TRACE); out["state0"] = m.js(STATE); out["front0"] = front()
+            m.js(OTHER % other_focus); out["state1"] = m.js(STATE); out["front1"] = front()
             m.context("content"); out["behind"] = m.js(READ)
-            m.context("chrome"); m.js(CLOSE); out["state2"] = m.js(STATE); out["trace"] = m.js(READTRACE)
+            m.context("chrome"); m.js(CLOSE); out["state2"] = m.js(STATE); out["front2"] = front(); out["trace"] = m.js(READTRACE)
             m.context("content"); out["back"] = m.js(READ)
             with contextlib.suppress(Exception):
                 m.call("Marionette:Quit", {"flags": ["eForceQuit"]})
@@ -53,11 +60,12 @@ def run(binary, prefs, other_focus):
 if __name__ == "__main__":
     ours, stock, up = sys.argv[1:4]
     res = {}
+    signed = sys.argv[4]
     for name, b, prefs, of in [
         ("stock", stock, {}, "other.focus();"),
-        ("upstream", up, {}, "other.focus();"),
         ("ours", ours, {}, "other.focus();"),
-        ("ours+emulate", ours, {"aliasmode.focus.emulate_active_window": True}, "other.focus();"),
+        ("upstream", up, {}, "other.focus();"),
+        ("ours-adhoc-signed", signed, {}, "other.focus();"),
         ("stock-nofocuscall", stock, {}, ""),
         ("ours-nofocuscall", ours, {}, ""),
     ]:
