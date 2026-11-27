@@ -18,7 +18,10 @@ downloads one **font pack** per OS (`aliasmode-fonts-<os>-<rev>.zip`, a release
 asset next to the engine archives), checks its SHA-256, unpacks it in the app's
 data folder and passes the folder in the `aliasmode:fontsDir` config key.
 `font-pack-dir.patch` activates that folder after `fonts/` (DirectWrite, CoreText
-and fontconfig), except for a native identity. `make font-packs`
+and fontconfig), except for a native identity. On macOS the folder is
+registered for the process only, so the GPU process, which draws the text,
+cannot find those faces by name: `macos-font-pack-gpu.patch` sends it their data
+instead, as it does for web fonts. `make font-packs`
 (`scripts/package-font-packs.py`) builds the packs from the per-OS sets of the
 152.0.4-beta.30 r4 packages, the fonts the app's font lists were made for.
 

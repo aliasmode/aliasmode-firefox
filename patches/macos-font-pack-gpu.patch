@@ -1,0 +1,16 @@
+diff --git a/gfx/2d/ScaledFontMac.cpp b/gfx/2d/ScaledFontMac.cpp
+--- a/gfx/2d/ScaledFontMac.cpp
++++ b/gfx/2d/ScaledFontMac.cpp
+@@ -398,6 +398,12 @@ bool UnscaledFontMac::GetFontDescriptor(FontDescriptorOutput aCb,
+   AutoRelease<CFURLRef> fontUrl(
+       (CFURLRef)CTFontCopyAttribute(ctFont, kCTFontURLAttribute));
+   if (fontUrl) {
++    // AliasMode: a font this process registered itself (the bundled fonts/
++    // and the aliasmode:fontsDir pack) does not exist in the GPU process,
++    // which would draw these glyph IDs from another font. Send its data.
++    if (CTFontManagerGetScopeForURL(fontUrl) == kCTFontManagerScopeProcess) {
++      return false;
++    }
+     CFStringRef urlStr(CFURLCopyFileSystemPath(fontUrl, kCFURLPOSIXPathStyle));
+     cstr = CFStringGetCStringPtr(urlStr, kCFStringEncodingUTF8);
+     if (!cstr) {
