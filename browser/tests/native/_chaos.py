@@ -26,13 +26,17 @@ went looking for "anything called camoufox" would kill the developer's browser.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 
-# Names as the kernel reports them, from an observed tree.
-BROWSER = "camoufox-bin"
+# Names as the kernel reports them, from an observed tree. The browser parent
+# is the binary under test (conftest.binary), named by its build's app name.
+BROWSER = Path(os.environ.get("CAMOUFOX_EXECUTABLE_PATH")
+               or os.environ.get("CAMOUFOX_BINARY") or "camoufox-bin").name
 SOCKET_PROCESS = "Socket Process"
 FORKSERVER = "forkserver"
 WEB_CONTENT = "Web Content"
