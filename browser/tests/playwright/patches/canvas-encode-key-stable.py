@@ -11,6 +11,11 @@ every open. With a seed the key now comes from the seed, so:
   - another seed encodes it to other bytes (no cross-profile link);
   - the deBG chunk is still there, as in stock Firefox.
 
+The canvas holds a gradient, a rectangle and a circle, and no text: with the
+font bundle CI stages, text drawn on a fresh launch comes out in one of two
+renderings now and then, in upstream Camoufox too (measured 2 of 40 launches),
+and that is no part of the key.
+
     python tests/patches/canvas-encode-key-stable.py
 """
 
@@ -24,7 +29,9 @@ import threading
 DRAW = """() => {
   const c = document.createElement('canvas'); c.width = 240; c.height = 60;
   const x = c.getContext('2d');
-  x.font = '14px Arial'; x.fillStyle = '#069'; x.fillText('Cwm fjordbank glyphs vext quiz', 2, 30);
+  const g = x.createLinearGradient(0, 0, 240, 0);
+  g.addColorStop(0, '#c33'); g.addColorStop(1, '#33c');
+  x.fillStyle = g; x.fillRect(4, 8, 150, 40);
   x.beginPath(); x.arc(200, 30, 15, 0, Math.PI * 2); x.strokeStyle = '#a0f'; x.stroke();
   return c.toDataURL();
 }"""
@@ -43,8 +50,7 @@ def chunks(data_url: str) -> dict:
 def encode(port: int, seed: int) -> str:
     from camoufox.sync_api import Camoufox
     # One identity for every launch, as a profile has: the launcher otherwise
-    # draws an OS at random, and with the font bundle each OS's fonts draw the
-    # text differently, so the pixels and their deBG hash changed with the draw.
+    # draws an OS at random.
     kwargs = dict(headless=True, os="linux", config={"aliasmode:canvasSeed": seed},
                   i_know_what_im_doing=True)
     if os.environ.get("CAMOUFOX_EXECUTABLE_PATH"):
