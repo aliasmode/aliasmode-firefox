@@ -110,93 +110,42 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
  
  void PeerConnectionAutoTimer::RegisterConnection() { mRefCnt++; }
  
-@@ -1814,12 +1822,20 @@ already_AddRefed<dom::Promise> PeerConnectionImpl::GetStats(
+@@ -1814,12 +1822,17 @@ already_AddRefed<dom::Promise> PeerConnectionImpl::GetStats(
    auto ipv6Opt = SpoofIP(true);
    bool shouldSanitizeStats = ipv4Opt || ipv6Opt;
    std::set<std::string> proxiedAddresses = mProxiedAddresses;
 +  // AliasMode: behind a proxy without UDP the real agent has not gathered; the
-+  // page sees the local candidates and state of the one it talks to (the ICE
-+  // agent behind the proxy).
++  // page sees the state of the one it talks to (the ICE agent behind the
++  // proxy). Its candidates are in the report already (GetStats below).
 +  const bool fakeIce = mFakeIce;
-+  const bool fakeIceOverlay = mFakeIceOverlay;
 +  const auto fakeIceState = mFakeIceState;
-+  std::vector<FakeIceCandidateStat> fakeStats = mFakeIceStats;
  
    GetStats(aSelector, false)
        ->Then(
            GetMainThreadSerialEventTarget(), __func__,
            [promise, window = mWindow, shouldSanitizeStats, ipv4Opt, ipv6Opt,
 -           proxiedAddresses](
-+           proxiedAddresses, fakeIce, fakeIceOverlay, fakeIceState,
-+           fakeStats = std::move(fakeStats)](
++           proxiedAddresses, fakeIce, fakeIceState](
                UniquePtr<dom::RTCStatsReportInternal>&& aReport) {
              // Camoufox: Sanitize IP addresses in stats before exposing to JS
              if (shouldSanitizeStats && aReport) {
-@@ -1847,6 +1863,63 @@ already_AddRefed<dom::Promise> PeerConnectionImpl::GetStats(
+@@ -1847,6 +1860,15 @@ already_AddRefed<dom::Promise> PeerConnectionImpl::GetStats(
                  }
                }
              }
-+            if ((fakeIce || fakeIceOverlay) && aReport) {
-+              // The overlay's state is the real agent's.
++            if (fakeIce && aReport) {
 +              for (auto& transport : aReport->mTransportStats) {
-+                if (!fakeIce) {
-+                  break;
-+                }
 +                if (transport.mIceState.WasPassed()) {
 +                  transport.mIceState.Value() = fakeIceState;
 +                } else {
 +                  transport.mIceState.Construct(fakeIceState);
 +                }
 +              }
-+              // Its host candidates stand in for the real agent's.
-+              if (fakeIceOverlay) {
-+                aReport->mIceCandidateStats.RemoveElementsBy(
-+                    [](const dom::RTCIceCandidateStats& aCand) {
-+                      return aCand.mType.WasPassed() &&
-+                             aCand.mType.Value() ==
-+                                 dom::RTCStatsType::Local_candidate &&
-+                             aCand.mCandidateType.WasPassed() &&
-+                             aCand.mCandidateType.Value() ==
-+                                 dom::RTCIceCandidateType::Host;
-+                    });
-+              }
-+              for (const auto& stat : fakeStats) {
-+                const nsString transportId =
-+                    NS_ConvertASCIItoUTF16(stat.mTransportId.c_str());
-+                // A transport that bundling removed has no stats any more.
-+                if (std::none_of(aReport->mTransportStats.begin(),
-+                                 aReport->mTransportStats.end(),
-+                                 [&](const dom::RTCTransportStats& aTransport) {
-+                                   return aTransport.mId.WasPassed() &&
-+                                          aTransport.mId.Value() == transportId;
-+                                 })) {
-+                  continue;
-+                }
-+                dom::RTCIceCandidateStats cand;
-+                cand.mType.Construct(dom::RTCStatsType::Local_candidate);
-+                cand.mTimestamp.Construct(aReport->mTimestamp);
-+                cand.mId.Construct(stat.mId);
-+                cand.mTransportId = transportId;
-+                cand.mAddress.Construct(stat.mAddress);
-+                cand.mPort.Construct(stat.mPort);
-+                cand.mProtocol.Construct(stat.mProtocol);
-+                cand.mCandidateType.Construct(stat.mType);
-+                cand.mPriority.Construct(int32_t(stat.mPriority));
-+                cand.mFoundation.Construct(stat.mFoundation);
-+                cand.mUsernameFragment.Construct(stat.mUfrag);
-+                if (stat.mTcp) {
-+                  cand.mTcpType.Construct(dom::RTCIceTcpCandidateType::Active);
-+                }
-+                if (!aReport->mIceCandidateStats.AppendElement(cand,
-+                                                               fallible)) {
-+                  mozalloc_handle_oom(0);
-+                }
-+              }
 +            }
              RefPtr report = MakeRefPtr<RTCStatsReport>(window);
              report->Incorporate(*aReport);
              promise->MaybeResolve(std::move(report));
-@@ -3396,6 +3469,14 @@ void PeerConnectionImpl::CandidateReady(const std::string& candidate_,
+@@ -3396,6 +3418,14 @@ void PeerConnectionImpl::CandidateReady(const std::string& candidate_,
    STAMP_TIMECARD(mTimeCard, "Ice Candidate gathered");
    PC_AUTO_ENTER_API_CALL_VOID_RETURN(false);
  
@@ -211,7 +160,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    NoteProxiedAddress(candidate_);
    const std::string& candidate = [&]() -> const std::string& {
      if (ShouldSpoofCandidateIP()) {
-@@ -3618,7 +3699,8 @@ void PeerConnectionImpl::NoteProxiedAddress(const std::string& aCandidate) {
+@@ -3618,7 +3648,8 @@ void PeerConnectionImpl::NoteProxiedAddress(const std::string& aCandidate) {
  }
  
  std::string PeerConnectionImpl::SpoofCandidateIP(const std::string& candidate) {
@@ -221,7 +170,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
      return candidate;
    }
  
-@@ -3838,6 +3920,621 @@ void PeerConnectionImpl::MaybeFabricateHostCandidates() {
+@@ -3838,6 +3869,652 @@ void PeerConnectionImpl::MaybeFabricateHostCandidates() {
                                ObString(ufrag.c_str()), rv);
  }
  
@@ -795,6 +744,37 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 +  return nullptr;
 +}
 +
++UniquePtr<dom::RTCStatsCollection> PeerConnectionImpl::FakeIceCandidateStats(
++    const std::set<std::string>& aTransportIds,
++    DOMHighResTimeStamp aNow) const {
++  auto stats = MakeUnique<dom::RTCStatsCollection>();
++  for (const auto& stat : mFakeIceStats) {
++    // "" asks for every transport.
++    if (!aTransportIds.count("") && !aTransportIds.count(stat.mTransportId)) {
++      continue;
++    }
++    dom::RTCIceCandidateStats cand;
++    cand.mType.Construct(dom::RTCStatsType::Local_candidate);
++    cand.mTimestamp.Construct(aNow);
++    cand.mId.Construct(stat.mId);
++    cand.mTransportId = NS_ConvertASCIItoUTF16(stat.mTransportId.c_str());
++    cand.mAddress.Construct(stat.mAddress);
++    cand.mPort.Construct(stat.mPort);
++    cand.mProtocol.Construct(stat.mProtocol);
++    cand.mCandidateType.Construct(stat.mType);
++    cand.mPriority.Construct(int32_t(stat.mPriority));
++    cand.mFoundation.Construct(stat.mFoundation);
++    cand.mUsernameFragment.Construct(stat.mUfrag);
++    if (stat.mTcp) {
++      cand.mTcpType.Construct(dom::RTCIceTcpCandidateType::Active);
++    }
++    if (!stats->mIceCandidateStats.AppendElement(cand, fallible)) {
++      mozalloc_handle_oom(0);
++    }
++  }
++  return stats;
++}
++
 +void PeerConnectionImpl::StartFakeIceChecks() {
 +  // A renegotiation keeps the checks of the first negotiation.
 +  if (mFakeChecksStarted) {
@@ -843,7 +823,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
  // Implements the steps to "change the selected candidate pair and state".
  // https://w3c.github.io/webrtc-pc/#dfn-change-the-selected-candidate-pair-and-state
  void PeerConnectionImpl::IceConnectionStateChange(
-@@ -3854,6 +4551,12 @@ void PeerConnectionImpl::IceConnectionStateChange(
+@@ -3854,6 +4531,12 @@ void PeerConnectionImpl::IceConnectionStateChange(
      return;
    }
  
@@ -856,7 +836,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    CSFLogDebug(LOGTAG, "IceConnectionStateChange: %s %d (%p)",
                aTransportId.c_str(), static_cast<int>(domState), this);
  
-@@ -4094,6 +4797,16 @@ void PeerConnectionImpl::OnCandidateFound(const std::string& aTransportId,
+@@ -4094,6 +4777,16 @@ void PeerConnectionImpl::OnCandidateFound(const std::string& aTransportId,
    MOZ_ASSERT(NS_IsMainThread(), "Wrong thread");
    RefPtr<PeerConnectionImpl> kungFuDeathGrip(this);
  
@@ -873,7 +853,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    if (mStunAddrsRequest && !aCandidateInfo.mMDNSAddress.empty()) {
      MOZ_ASSERT(!aCandidateInfo.mActualAddress.empty());
  
-@@ -4140,6 +4853,16 @@ void PeerConnectionImpl::OnCandidateError(
+@@ -4140,6 +4833,16 @@ void PeerConnectionImpl::OnCandidateError(
      return;
    }
  
@@ -890,7 +870,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    STAMP_TIMECARD(mTimeCard, "Sending icecandidateerror event");
    uint16_t errorCode = aErrorInfo.mErrorCode ? aErrorInfo.mErrorCode : 701;
    JSErrorResult rv;
-@@ -4159,6 +4882,17 @@ void PeerConnectionImpl::IceGatheringStateChange(
+@@ -4159,6 +4862,17 @@ void PeerConnectionImpl::IceGatheringStateChange(
      return;
    }
  
@@ -908,7 +888,47 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    CSFLogDebug(LOGTAG, "IceGatheringStateChange: %s %d (%p)",
                aTransportId.c_str(), static_cast<int>(state), this);
  
-@@ -5112,6 +5846,11 @@ void PeerConnectionImpl::StartIceChecks(const JsepSession& aSession) {
+@@ -4546,7 +5260,38 @@ RefPtr<dom::RTCStatsReportPromise> PeerConnectionImpl::GetStats(
+       std::move(codecStats), std::move(transceiverStatsPromises)));
+ 
+   for (const auto& transportId : transportIds) {
+-    promises.AppendElement(mTransportHandler->GetIceStats(transportId, now));
++    RefPtr<dom::RTCStatsPromise> iceStats =
++        mTransportHandler->GetIceStats(transportId, now);
++    // AliasMode: with a TURN server over TCP or TLS the host candidates are
++    // the ICE agent behind the proxy's, as in the page's events.
++    if (mFakeIceOverlay) {
++      RefPtr<dom::RTCStatsPromise> withoutHost = iceStats->Then(
++          GetMainThreadSerialEventTarget(), __func__,
++          [](UniquePtr<dom::RTCStatsCollection>&& aStats) {
++            aStats->mIceCandidateStats.RemoveElementsBy(
++                [](const dom::RTCIceCandidateStats& aCand) {
++                  return aCand.mType.WasPassed() &&
++                         aCand.mType.Value() ==
++                             dom::RTCStatsType::Local_candidate &&
++                         aCand.mCandidateType.WasPassed() &&
++                         aCand.mCandidateType.Value() ==
++                             dom::RTCIceCandidateType::Host;
++                });
++            return dom::RTCStatsPromise::CreateAndResolve(std::move(aStats),
++                                                          __func__);
++          },
++          [](nsresult aError) {
++            return dom::RTCStatsPromise::CreateAndReject(aError, __func__);
++          });
++      iceStats = std::move(withoutHost);
++    }
++    promises.AppendElement(std::move(iceStats));
++  }
++  // AliasMode: the local candidates of the ICE agent behind the proxy, beside
++  // the real agent's, so their ids are rewritten as those are.
++  if (mFakeIce || mFakeIceOverlay) {
++    promises.AppendElement(dom::RTCStatsPromise::CreateAndResolve(
++        FakeIceCandidateStats(transportIds, now), __func__));
+   }
+ 
+   if (mDataConnection) {
+@@ -5112,6 +5857,11 @@ void PeerConnectionImpl::StartIceChecks(const JsepSession& aSession) {
      }
    }
  
@@ -920,7 +940,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    nsCOMPtr<nsIRunnable> runnable(
        WrapRunnable(mTransportHandler, &MediaTransportHandler::StartIceChecks,
                     aSession.IsIceControlling(), attributes));
-@@ -5164,6 +5903,10 @@ void PeerConnectionImpl::AddIceCandidate(const std::string& aCandidate,
+@@ -5164,6 +5914,10 @@ void PeerConnectionImpl::AddIceCandidate(const std::string& aCandidate,
    MOZ_ASSERT(NS_IsMainThread());
    MOZ_ASSERT(!aTransportId.empty());
  
@@ -931,7 +951,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
    bool obfuscate_host_addresses = Preferences::GetBool(
        "media.peerconnection.ice.obfuscate_host_addresses", false);
  
-@@ -5351,6 +6094,40 @@ void PeerConnectionImpl::EnsureIceGathering(bool aDefaultRouteOnly,
+@@ -5351,6 +6105,40 @@ void PeerConnectionImpl::EnsureIceGathering(bool aDefaultRouteOnly,
      return;
    }
  
@@ -975,7 +995,7 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.cpp b/dom/media/webrtc/js
 diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.h b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
 --- a/dom/media/webrtc/jsapi/PeerConnectionImpl.h
 +++ b/dom/media/webrtc/jsapi/PeerConnectionImpl.h
-@@ -641,6 +641,25 @@ class PeerConnectionImpl final
+@@ -641,6 +641,28 @@ class PeerConnectionImpl final
    // surface the pair a real gather reports. Never a srflx, which only a STUN
    // answer can produce.
    void MaybeFabricateHostCandidates();
@@ -998,10 +1018,13 @@ diff --git a/dom/media/webrtc/jsapi/PeerConnectionImpl.h b/dom/media/webrtc/jsap
 +  void EndFakeIceOverlay(size_t aTransport);
 +  struct FakeIceTransport;
 +  FakeIceTransport* FindFakeIceTransport(const std::string& aTransportId);
++  UniquePtr<dom::RTCStatsCollection> FakeIceCandidateStats(
++      const std::set<std::string>& aTransportIds,
++      DOMHighResTimeStamp aNow) const;
    void SendLocalIceCandidateToContent(uint16_t level, const std::string& mid,
                                        const std::string& candidate,
                                        const std::string& ufrag);
-@@ -747,6 +766,47 @@ class PeerConnectionImpl final
+@@ -747,6 +769,47 @@ class PeerConnectionImpl final
    // the proxy's relay as a page's own STUN server saw it, or a TURN server's
    // allocation: never this host's, and never the identity's address.
    std::set<std::string> mProxiedAddresses;

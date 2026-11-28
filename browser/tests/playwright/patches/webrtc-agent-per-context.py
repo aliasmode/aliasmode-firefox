@@ -21,11 +21,11 @@ What PASS means: behind an HTTP proxy, with the app's prefs, a data channel
 connection with a STUN server and one with the same STUN server and a TURN
 server over TCP show the same candidates: per component a host UDP and a host
 TCP candidate and one srflx on the host UDP port, with the identity's address,
-and no error for the STUN server. An audio and video offer shows them for every
-m-section that is not bundle-only, for both components. No candidate comes
-after its m-section's end-of-candidates or after the final one, the TURN server
-is asked through the proxy (CONNECT), and this machine's address is in no
-candidate or SDP.
+also in getStats() under its transport, and no error for the STUN server. An
+audio and video offer shows them for every m-section that is not bundle-only,
+for both components. No candidate comes after its m-section's
+end-of-candidates or after the final one, the TURN server is asked through the
+proxy (CONNECT), and this machine's address is in no candidate or SDP.
 
     python browser/tests/playwright/patches/webrtc-agent-per-context.py
 """
@@ -49,7 +49,9 @@ APP_PREFS = {
     "media.peerconnection.ice.no_host": True,
 }
 
-GATHER = """async ([servers, media, bundlePolicy]) => {
+# The main world: an isolated world cannot read the RTCStatsReport getStats()
+# returns.
+GATHER = """mw:async ([servers, media, bundlePolicy]) => {
   const pc = new RTCPeerConnection({iceServers: servers, bundlePolicy});
   const events = [], errors = [];
   const ended = new Promise(resolve => {
@@ -68,8 +70,13 @@ GATHER = """async ([servers, media, bundlePolicy]) => {
   // Anything late would arrive in this time.
   await new Promise(resolve => setTimeout(resolve, 500));
   const sdp = pc.localDescription.sdp;
+  const transports = [], stats = [];
+  (await pc.getStats()).forEach(s => {
+    if (s.type === 'transport') transports.push(s.id);
+    if (s.type === 'local-candidate') stats.push([s.transportId, s.candidateType, s.protocol, s.port]);
+  });
   pc.close();
-  return {done, events, errors, sdp};
+  return {done, events, errors, sdp, transports, stats};
 }"""
 
 
@@ -119,6 +126,11 @@ def check(label, r, machine):
         failures.append(f"candidates {sorted(shape)}, not nICEr's {sorted(want)}")
     if srflx_ports != host_ports:
         failures.append(f"srflx ports {srflx_ports} are not the host UDP ports {host_ports}")
+    stats_srflx = sorted(str(port) for _, kind, _, port in r["stats"] if kind == "srflx")
+    if stats_srflx != sorted(srflx_ports.values()):
+        failures.append(f"getStats() lists the srflx candidates {stats_srflx}, not the page's {sorted(srflx_ports.values())}")
+    if any(transport not in r["transports"] for transport, *_ in r["stats"]):
+        failures.append(f"getStats() lists candidates {r['stats']} of no transport in {r['transports']}")
     if STUN in r["errors"]:
         failures.append(f"an error for the STUN server: {r['errors']}")
     seen = "\n".join(e[1] for e in r["events"] if e) + "\n" + r["sdp"]
@@ -161,7 +173,7 @@ async def main() -> int:
     results = {}
     async with AsyncCamoufox(headless=True, os="linux", config={"webrtc:ipv4": SPOOFED_IP},
                              proxy={"server": f"http://127.0.0.1:{port}"}, geoip=False,
-                             firefox_user_prefs=APP_PREFS, i_know_what_im_doing=True,
+                             firefox_user_prefs=APP_PREFS, main_world_eval=True, i_know_what_im_doing=True,
                              executable_path=str(resolve_binary())) as browser:
         page = await browser.new_page()
         await page.goto("http://parity.test/")
