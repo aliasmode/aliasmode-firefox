@@ -40,6 +40,8 @@ class Marionette:
         self._id = 0
         self._recv()
         self.call("WebDriver:NewSession", {"capabilities": {}})
+        # The ICE probe gathers three connections, each up to 15 s.
+        self.call("WebDriver:SetTimeouts", {"script": 120000})
 
     def _recv(self):
         buf = b""
