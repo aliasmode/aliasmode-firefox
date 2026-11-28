@@ -42,7 +42,11 @@ def chunks(data_url: str) -> dict:
 
 def encode(port: int, seed: int) -> str:
     from camoufox.sync_api import Camoufox
-    kwargs = dict(headless=True, config={"aliasmode:canvasSeed": seed}, i_know_what_im_doing=True)
+    # One identity for every launch, as a profile has: the launcher otherwise
+    # draws an OS at random, and with the font bundle each OS's fonts draw the
+    # text differently, so the pixels and their deBG hash changed with the draw.
+    kwargs = dict(headless=True, os="linux", config={"aliasmode:canvasSeed": seed},
+                  i_know_what_im_doing=True)
     if os.environ.get("CAMOUFOX_EXECUTABLE_PATH"):
         kwargs["executable_path"] = os.environ["CAMOUFOX_EXECUTABLE_PATH"]
     with Camoufox(**kwargs) as browser:
