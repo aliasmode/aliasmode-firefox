@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import results as evidence
-from ._util import BROWSER_ROOT, EVIDENCE_DIR, read_upstream_sh, run
+from ._util import BROWSER_ROOT, EVIDENCE_DIR, app_name, read_upstream_sh, run
 
 # mach prints errors in a few shapes; catch the common ones for the summary.
 _ERROR_RE = re.compile(
@@ -68,7 +68,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     if not args.preflight:
-        packages = sorted((BROWSER_ROOT / "dist").glob(f"camoufox-*-{args.target[:3]}.{args.arch}.zip"))
+        packages = sorted((BROWSER_ROOT / "dist").glob(f"{app_name()}-*-{args.target[:3]}.{args.arch}.zip"))
         if not packages:
             result.note(
                 "multibuild.py reported success but browser/dist holds no package. Treating as "

@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from ._util import BROWSER_ROOT, Result, read_upstream_sh, run
+from ._util import BROWSER_ROOT, Result, app_name, read_upstream_sh, run
 
 
 def source_dir(version: Optional[str] = None, release: Optional[str] = None) -> Path:
@@ -26,11 +26,11 @@ def source_dir(version: Optional[str] = None, release: Optional[str] = None) -> 
 
 
 def built_binary(version: Optional[str] = None, release: Optional[str] = None) -> Path:
-    """Path to the freshly built camoufox-bin. Not guaranteed to exist."""
+    """Path to the freshly built <app>-bin. Not guaranteed to exist."""
     override = os.environ.get("CAMOUFOX_BINARY")
     if override:
         return Path(override)
-    return source_dir(version, release) / "obj-x86_64-pc-linux-gnu" / "dist" / "bin" / "camoufox-bin"
+    return source_dir(version, release) / "obj-x86_64-pc-linux-gnu" / "dist" / "bin" / f"{app_name()}-bin"
 
 
 def require_binary(version: Optional[str] = None, release: Optional[str] = None) -> Path:

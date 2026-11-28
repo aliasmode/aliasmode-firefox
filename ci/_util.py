@@ -25,6 +25,16 @@ BROWSER_ROOT = REPO_ROOT / "browser"
 CI_DIR = REPO_ROOT / "ci"
 SKIPLIST_PATH = CI_DIR / "skiplist.yml"
 
+
+def app_name() -> str:
+    """The build's MOZ_APP_NAME: the binary is <name>-bin, the package <name>-*.zip."""
+    configure = BROWSER_ROOT / "additions" / "browser" / "branding" / "camoufox" / "configure.sh"
+    match = re.search(r"^MOZ_APP_NAME=(\S+)$", configure.read_text(encoding="utf-8"), re.M)
+    if not match:
+        raise RuntimeError(f"{configure} sets no MOZ_APP_NAME")
+    return match.group(1)
+
+
 # Where a run scatters its intermediate state. Overridable so a local operator
 # can keep several runs side by side, and so a sharded CI job can hand each
 # shard its own directory.

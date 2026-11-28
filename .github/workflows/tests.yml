@@ -637,7 +637,8 @@ jobs:
         run: |
           set -euo pipefail
           src="browser/camoufox-${{ needs.resolve.outputs.browser_version }}-${{ needs.resolve.outputs.browser_release }}/obj-x86_64-pc-linux-gnu/dist/bin"
-          test -x "$src/camoufox-bin" || { echo "::error::no camoufox-bin at $src"; exit 1; }
+          bin="$(python3 -c 'from ci._util import app_name; print(app_name())')-bin"
+          test -x "$src/$bin" || { echo "::error::no $bin at $src"; exit 1; }
 
           # `mach build` produces an *unpackaged* tree. Two things
           # browser/scripts/package.py would add are load-bearing for the test
@@ -663,7 +664,7 @@ jobs:
           # browser/bundle/fonts/groups.json), not a copy per OS; groups.json is what
           # utils._generate_fontconfig reads to decide which of them an identity
           # may see, so its absence is the failure that matters.
-          for required in camoufox-bin properties.json camoufox.cfg fonts/groups.json fonts/LMW fontconfig/linux addons/UBO/manifest.json; do
+          for required in "$bin" properties.json camoufox.cfg fonts/groups.json fonts/LMW fontconfig/linux addons/UBO/manifest.json; do
             [ -e "$src/$required" ] || { echo "::error::artifact is missing $required"; exit 1; }
           done
 
@@ -707,7 +708,8 @@ jobs:
           # The cached browser bundles the uBO of the run that built it; this
           # run's replaces it.
           python3 browser/scripts/fetch-ubo.py stage restored/bin
-          test -f restored/bin/camoufox-bin || { echo "::error::restored artifact has no camoufox-bin"; exit 1; }
+          bin="$(python3 -c 'from ci._util import app_name; print(app_name())')-bin"
+          test -f "restored/bin/$bin" || { echo "::error::restored artifact has no $bin"; exit 1; }
           # Via a temporary name, not over the input. `zstd -o` refuses an
           # existing destination ("already exists; stdin is an input - not
           # proceeding") and exits 1, which failed every cache-hit build as soon

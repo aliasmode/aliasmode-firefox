@@ -12,7 +12,7 @@ inputs:
 
 outputs:
   binary:
-    description: Absolute path to camoufox-bin
+    description: Absolute path to the browser binary
     value: ${{ steps.unpack.outputs.binary }}
 
 runs:
@@ -51,8 +51,9 @@ runs:
       run: |
         mkdir -p .ci-browser
         zstd -d -c camoufox-dist.tar.zst | tar -C .ci-browser -xf -
-        binary="$(realpath .ci-browser/bin/camoufox-bin)"
-        test -x "$binary" || { echo "::error::camoufox-bin missing from the artifact"; exit 1; }
+        bin="$(python3 -c 'from ci._util import app_name; print(app_name())')-bin"
+        binary="$(realpath ".ci-browser/bin/$bin")"
+        test -x "$binary" || { echo "::error::$bin missing from the artifact"; exit 1; }
         # The Python API resolves properties.json next to the binary, and
         # camoufox.cfg is where every spoofing pref lives. Without either, the
         # browser either refuses to launch or launches as plain Firefox.
