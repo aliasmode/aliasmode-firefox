@@ -311,3 +311,22 @@ skip:
       Compares a 500x500 grid.html screenshot with a golden image that has no
       scrollbar. Here the page draws the classic scrollbar stock Firefox draws,
       and that strip differs (5339 pixels).
+
+  # --- focus emulation ---------------------------------------------------------
+  #
+  # Playwright makes every page of a driven browser believe it has the focus.
+  # AliasMode drives people's own windows and gives a page the focus, blur and
+  # visibility stock Firefox gives it (ci/tribal-rules.yml:
+  # driven-pages-stay-focused), so only the page of the active window has it.
+
+  - test: tests/async/test_emulation_focus.py::test_should_think_that_all_pages_are_focused
+    reason: >-
+      Opens a second page and asserts the first still reads
+      document.hasFocus() true. In stock Firefox the new page's window takes
+      the focus, and so it does here: the first page reads false.
+
+  - test: tests/async/test_emulation_focus.py::test_should_focus_popups_by_default
+    reason: >-
+      Opens a popup and asserts both the popup and its opener read
+      document.hasFocus() true. In stock Firefox the popup takes the focus
+      from its opener, and so it does here: the opener reads false.
