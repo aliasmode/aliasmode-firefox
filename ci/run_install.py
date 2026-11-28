@@ -49,6 +49,8 @@ import threading
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
+import yaml
+
 from . import release, results
 from ._util import RESULTS_DIR, REPO_ROOT, STOCK_UA, WORK_DIR, run
 
@@ -77,9 +79,19 @@ for (const type of ["click", "keydown", "keyup"]) {
 </script>"""
 
 
+def package_repo() -> str:
+    """Where the packages' `fetch` installs a browser from: the repository of
+    repos.yml's default browser source. A fork whose own releases are not the
+    packages' (another app name, another tag scheme) still pins them to one
+    `fetch` can install."""
+    repos = yaml.safe_load((PYTHONLIB / "src" / "camoufox" / "repos.yml").read_text(encoding="utf-8"))
+    source = next(b for b in repos["browsers"] if b["name"] == repos["default"]["browser"])
+    return source["repo"].split(",")[0].strip()
+
+
 def newest_browser_tag() -> str:
     """The newest published browser release, for a tree no release was built from."""
-    for rel in release.github_releases(release.repo_name()):  # newest first
+    for rel in release.github_releases(package_repo()):  # newest first
         if not rel.get("draft") and release._BROWSER_TAG.match(rel["tag_name"]):
             return rel["tag_name"]
     raise SystemExit("no published browser release to pin")
@@ -96,7 +108,7 @@ def pin(tag: str) -> None:
         raise SystemExit(f"{tag!r} is not a browser release tag")
     release.PIN_FILE.write_text(json.dumps({
         "tag": tag,
-        "repo": release.repo_name(),
+        "repo": package_repo(),
         "repo_name": "Official",
         "version": m["version"],
         "build": f"{m['prefix']}.{m['n']}",
